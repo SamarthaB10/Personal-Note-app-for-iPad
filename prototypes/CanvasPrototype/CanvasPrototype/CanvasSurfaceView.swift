@@ -87,7 +87,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
 
         backgroundView.frame = pageView.bounds
         backgroundView.contentMode = .scaleToFill
-        backgroundView.image = Self.loadPDFBackground()
+        backgroundView.image = store.showsPrototypeBackground ? Self.loadPDFBackground() : nil
         backgroundView.isUserInteractionEnabled = false
         pageView.addSubview(backgroundView)
 

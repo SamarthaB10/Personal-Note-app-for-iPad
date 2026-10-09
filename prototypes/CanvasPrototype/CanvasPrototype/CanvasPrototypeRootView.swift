@@ -1,8 +1,13 @@
 import SwiftUI
 
 struct CanvasPrototypeRootView: View {
-    @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var store = CanvasPageStore()
+    @ObservedObject var store: CanvasPageStore
+    let notebookTitle: String
+    let pageNumber: Int
+    let pageCount: Int
+    let isNavigating: Bool
+    let onBack: () -> Void
+    let onPageChange: (Int) -> Void
     @State private var showsToolSettings = false
     @State private var showsSelectionActions = false
     @State private var showsSaveStatus = false
@@ -32,19 +37,35 @@ struct CanvasPrototypeRootView: View {
                 }
             }
             .accessibilityLabel("Editable page")
+            pageNavigation
         }
         .background(Color(uiColor: .systemBackground))
         .preferredColorScheme(.light)
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { store.saveLifecycleSnapshot() }
-        }
     }
 
     private var header: some View {
         HStack(spacing: 12) {
-            Text("Page 1")
-                .font(.headline)
-                .accessibilityAddTraits(.isHeader)
+            Button(action: onBack) {
+                CanvasLucideIcon(kind: .arrowLeft)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(isNavigating)
+            .accessibilityLabel("Back to library")
+            .accessibilityHint("Save this notebook and return to Unfiled")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notebookTitle).font(.headline).lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                Text("Page \(pageNumber) of \(pageCount)").font(.caption).foregroundStyle(.secondary)
+            }
+            Menu {
+                ForEach(1...pageCount, id: \.self) { number in
+                    Button("Page \(number)") { onPageChange(number - 1) }
+                }
+            } label: {
+                Text("Pages").frame(minWidth: 44, minHeight: 44)
+            }
+            .disabled(isNavigating)
+            .accessibilityLabel("Choose page, current page \(pageNumber) of \(pageCount)")
             Spacer(minLength: 8)
             if store.editingTextBoxID != nil {
                 Button("Done") { store.finishTextEditing() }
@@ -57,20 +78,38 @@ struct CanvasPrototypeRootView: View {
                 store.saveNow()
             }
             .frame(minWidth: 44, minHeight: 44)
-            .disabled(store.isSaving || !store.canWrite)
+            .disabled(isNavigating || store.isSaving || !store.canWrite)
             .accessibilityHint("Save this page on the iPad")
             Button("Reopen") {
                 showsSaveStatus = true
                 store.reloadSavedPage()
             }
             .frame(minWidth: 44, minHeight: 44)
-            .disabled(store.isSaving)
+            .disabled(isNavigating || store.isSaving)
             .accessibilityHint("Open the saved page")
         }
         .font(.subheadline)
         .padding(.horizontal, 16)
         .frame(height: 44)
         .background(Color(uiColor: .systemBackground))
+    }
+
+    private var pageNavigation: some View {
+        HStack(spacing: 16) {
+            Button("Previous") { onPageChange(pageNumber - 2) }
+                .frame(minWidth: 80, minHeight: 44)
+                .disabled(isNavigating || pageNumber == 1)
+                .accessibilityLabel("Previous page")
+            Spacer(minLength: 0)
+            Text("Page \(pageNumber) of \(pageCount)").font(.subheadline).monospacedDigit()
+            Spacer(minLength: 0)
+            Button("Next") { onPageChange(pageNumber) }
+                .frame(minWidth: 80, minHeight: 44)
+                .disabled(isNavigating || pageNumber == pageCount)
+                .accessibilityLabel("Next page")
+        }
+        .padding(.horizontal, 16)
+        .background(Color(uiColor: .secondarySystemBackground))
     }
 
     private var toolBar: some View {

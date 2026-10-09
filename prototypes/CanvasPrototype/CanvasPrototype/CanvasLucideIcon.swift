@@ -18,7 +18,7 @@ import SwiftUI
 /// Native paths from Lucide SVGs. No external renderer is needed.
 struct CanvasLucideIcon: View {
     enum Kind {
-        case pen, marker, eraser, text, rectangle, lasso, box, undo, more, settings
+        case pen, marker, eraser, text, rectangle, lasso, box, undo, more, settings, folder, notebook, plus, arrowLeft
     }
 
     let kind: Kind
@@ -36,6 +36,39 @@ struct CanvasLucideIcon: View {
     private var iconPath: Path {
         var path = Path()
         switch kind {
+        case .folder:
+            path.move(to: CGPoint(x: 20, y: 20))
+            path.addQuadCurve(to: CGPoint(x: 22, y: 18), control: CGPoint(x: 22, y: 20))
+            path.addLine(to: CGPoint(x: 22, y: 8))
+            path.addQuadCurve(to: CGPoint(x: 20, y: 6), control: CGPoint(x: 22, y: 6))
+            path.addLine(to: CGPoint(x: 12.1, y: 6))
+            path.addQuadCurve(to: CGPoint(x: 10.41, y: 5.1), control: CGPoint(x: 11, y: 6))
+            path.addLine(to: CGPoint(x: 9.6, y: 3.9))
+            path.addQuadCurve(to: CGPoint(x: 7.93, y: 3), control: CGPoint(x: 9, y: 3))
+            path.addLine(to: CGPoint(x: 4, y: 3))
+            path.addQuadCurve(to: CGPoint(x: 2, y: 5), control: CGPoint(x: 2, y: 3))
+            path.addLine(to: CGPoint(x: 2, y: 18))
+            path.addQuadCurve(to: CGPoint(x: 4, y: 20), control: CGPoint(x: 2, y: 20))
+            path.closeSubpath()
+        case .notebook:
+            path.addRoundedRect(in: CGRect(x: 4, y: 2, width: 16, height: 20), cornerSize: CGSize(width: 2, height: 2))
+            path.move(to: CGPoint(x: 16, y: 2))
+            path.addLine(to: CGPoint(x: 16, y: 22))
+            for y in [6, 10, 14, 18] {
+                path.move(to: CGPoint(x: 2, y: y))
+                path.addLine(to: CGPoint(x: 6, y: y))
+            }
+        case .plus:
+            path.move(to: CGPoint(x: 5, y: 12))
+            path.addLine(to: CGPoint(x: 19, y: 12))
+            path.move(to: CGPoint(x: 12, y: 5))
+            path.addLine(to: CGPoint(x: 12, y: 19))
+        case .arrowLeft:
+            path.move(to: CGPoint(x: 12, y: 19))
+            path.addLine(to: CGPoint(x: 5, y: 12))
+            path.addLine(to: CGPoint(x: 12, y: 5))
+            path.move(to: CGPoint(x: 19, y: 12))
+            path.addLine(to: CGPoint(x: 5, y: 12))
         case .pen:
             path.move(to: CGPoint(x: 13, y: 21))
             path.addLine(to: CGPoint(x: 21, y: 21))

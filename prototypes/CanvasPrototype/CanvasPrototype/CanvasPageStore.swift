@@ -30,9 +30,12 @@ final class CanvasPageStore: ObservableObject {
 
 
     var onFlushCanvasDrawing: (() -> Void)?
+    let showsPrototypeBackground: Bool
 
     private let fileURL: URL?
-    private let saveQueue = DispatchQueue(label: "CanvasPrototype.page-save", qos: .utility)
+    private let saveQueue: DispatchQueue
+    private let onSaved: ((CanvasPageData) -> Void)?
+    private let validatesSavedFile: Bool
     private var saveRevision = 0
     private var actionRevision = 0
     private var scratchUndoStack: [[RemovedStroke]] = []
@@ -57,6 +60,10 @@ final class CanvasPageStore: ObservableObject {
     }
 
     init() {
+        saveQueue = DispatchQueue(label: "CanvasPrototype.page-save", qos: .utility)
+        onSaved = nil
+        showsPrototypeBackground = true
+        validatesSavedFile = false
         let supportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         if let supportURL {
             let directory = supportURL.appendingPathComponent("CanvasPrototype", isDirectory: true)
@@ -86,6 +93,37 @@ final class CanvasPageStore: ObservableObject {
             persist()
         }
         drawingRevision = 1
+    }
+
+    /// Notebook pages arrive from the validated local store, without prototype fixtures.
+    init(page: CanvasPageData, fileURL: URL, saveQueue: DispatchQueue,
+         onSaved: ((CanvasPageData) -> Void)? = nil) {
+        self.page = page
+        self.fileURL = fileURL
+        self.saveQueue = saveQueue
+        self.onSaved = onSaved
+        showsPrototypeBackground = false
+        validatesSavedFile = true
+        saveStatus = "Saved page opened locally."
+        drawingRevision = 1
+    }
+
+    /// The library waits for this write before it closes a notebook.
+    func saveForClose() async -> Bool {
+        while true {
+            onFlushCanvasDrawing?()
+            pendingPageSave?.cancel()
+            pendingPageSave = nil
+            let snapshot = page
+            let succeeded = await withCheckedContinuation { continuation in
+                writeSnapshot { success in continuation.resume(returning: success) }
+            }
+            guard succeeded else { return false }
+            // Ink can finish while the write is in progress. Save that change as well.
+            if page.inkDrawingData == snapshot.inkDrawingData,
+               page.textBoxes == snapshot.textBoxes, page.shapes == snapshot.shapes,
+               page.scratchEraseEnabled == snapshot.scratchEraseEnabled { return true }
+        }
     }
 
     var drawing: PKDrawing {
@@ -536,10 +574,11 @@ final class CanvasPageStore: ObservableObject {
         writeSnapshot()
     }
 
-    private func writeSnapshot(isUserAction: Bool = false) {
+    private func writeSnapshot(isUserAction: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard canSave, let fileURL else {
             if fileURL == nil { saveStatus = "Local storage is unavailable." }
             if isUserAction { actionMessage = saveStatus }
+            completion?(false)
             return
         }
 
@@ -547,11 +586,15 @@ final class CanvasPageStore: ObservableObject {
         let revision = saveRevision
         let explicitActionRevision = actionRevision
         let snapshot = page
+        let validatesSavedFile = validatesSavedFile
         saveStatus = "Saving locally…"
         isSaving = true
         saveQueue.async { [weak self] in
             let result: Result<Void, Error>
             do {
+                if validatesSavedFile {
+                    _ = try Self.decodeAndValidatePage(from: Data(contentsOf: fileURL))
+                }
                 let encoded = try JSONEncoder().encode(snapshot)
                 try encoded.write(to: fileURL, options: .atomic)
                 result = .success(())
@@ -560,7 +603,14 @@ final class CanvasPageStore: ObservableObject {
             }
 
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self else { completion?(false); return }
+                let succeeded: Bool
+                switch result {
+                case .success: succeeded = true
+                case .failure: succeeded = false
+                }
+                completion?(succeeded)
+                if succeeded { self.onSaved?(snapshot) }
                 if isUserAction, self.actionRevision == explicitActionRevision {
                     switch result {
                     case .success:
@@ -586,8 +636,16 @@ final class CanvasPageStore: ObservableObject {
         canUndoScratch = false
     }
 
-    private static func decodeAndValidatePage(from data: Data) throws -> CanvasPageData {
+    nonisolated static func decodeAndValidatePage(from data: Data) throws -> CanvasPageData {
         let page = try JSONDecoder().decode(CanvasPageData.self, from: data)
+        let objectIDs = page.textBoxes.map(\.id) + page.shapes.map(\.id)
+        guard Set(objectIDs).count == objectIDs.count,
+              page.textBoxes.allSatisfy({ box in
+                  isValidFrame(box.frame) && box.fontSize.isFinite && box.fontSize > 0
+              }),
+              page.shapes.allSatisfy({ shape in
+                  isValidFrame(shape.frame) && shape.lineWidth.isFinite && shape.lineWidth > 0
+              }) else { throw SavedPageError.invalidObjects }
         if page.inkDrawingData.isEmpty {
             guard page.textBoxes.isEmpty, page.shapes.isEmpty else {
                 throw SavedPageError.invalidInk
@@ -598,8 +656,15 @@ final class CanvasPageStore: ObservableObject {
         return page
     }
 
+    nonisolated private static func isValidFrame(_ frame: CGRect) -> Bool {
+        frame.origin.x.isFinite && frame.origin.y.isFinite
+            && frame.size.width.isFinite && frame.size.height.isFinite
+            && frame.size.width > 0 && frame.size.height > 0
+    }
+
     private enum SavedPageError: Error {
         case invalidInk
+        case invalidObjects
     }
 
     private static func samplePage() -> CanvasPageData {
