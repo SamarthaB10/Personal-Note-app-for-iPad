@@ -4,7 +4,7 @@ import SwiftUI
 struct CanvasPrototypeApp: App {
     var body: some Scene {
         WindowGroup {
-            CanvasPrototypeRootView()
+            CanvasLibraryView()
         }
     }
 }
