@@ -1,0 +1,17 @@
+# PencilKit ink with page content controlled by the app
+
+Status: Accepted on 9 October 2026, after the combined physical checks passed.
+
+Use PencilKit for ink, UIKit for text boxes and the shape overlay, and SwiftUI for controls. The app controls freehand and boxed lasso selection, mixed movement and proportional resize, and the scratch-and-hold gesture. This choice meets the combined input requirements on the target iPad, as recorded in [the prototype evidence](../implementation/canvas-prototype.md#final-combined-physical-pass).
+
+The [accepted design](../design/notes-app.md) requires keyboard-only text entry, ink-only scratch erase with one-step Undo, and selection of complete enclosed strokes, text boxes, and shapes. Original PDF content stays fixed. PencilKit's ink selection alone does not supply selection of separate text boxes and shapes. The app therefore controls their shared selection and transforms. Text editing requires an explicit choice of a text box; Pencil input remains ink.
+
+The connected device was confirmed as an iPad 10th generation with iPadOS 26.7.1. The Apple Pencil USB-C model is user-reported. The build used Xcode 27 and SDK 27 with deployment target 26.0. The selected implementation leaves iPadOS 27-only APIs unused, including PaperKit subelement access and element-ID selection, and `PKCanvasView.selection`. Manual ink widths remain required; writing does not depend on pressure input.
+
+On 9 October 2026, the user passed the corrected installed batch: both lasso modes selected and deleted an S or whole word; Save/Reopen kept the result; unselected ink and the fixed PDF stayed intact. Direct drag, mixed resize, choice of one text box, smaller controls, and removal of empty guides also passed. Earlier user checks passed stable typing and Save/Reopen, comparison with Apple Notes while saving, palm contact, scrolling, manual widths, both erasers, scratch-and-hold, ordinary cross-outs and sketches, and immediate scratch Undo after new writing. The evidence also records a passed final source typecheck, signed physical build, installation, launch, capture, and round-5 Standards and Spec reviews with no findings. These are recorded results, not new checks made for this decision.
+
+PaperKit was an alternative. Its base framework is available on iPadOS 26, but its combined behavior was not verified on this device. Its model access and element-ID selection APIs require iPadOS 27 and are unsuitable for this target. This decision does not establish that PaperKit cannot meet the requirements.
+
+The cost of this choice is maintenance of the app's lasso geometry, touch target priority, movement preview, text-box choice, and gesture coordination. Framework selection could reduce this work. The verified approach gives the app control of the required content boundaries and input behavior. It adds no new dependency, fee, or paid service and preserves [ADR 0001](0001-free-native-local-app.md).
+
+Local prototype persistence with `PKDrawing` and JSON passed Save/Reopen. This does not select the final notebook storage format or recovery design; issue 8 remains open. Local storage does not prove exclusion from device cloud backup. Imported source PDFs must remain unchanged, with user-added content stored separately and editable. The canvas choice supports future app work. The complete first-version scope remains required; the one-page prototype does not implement that complete scope.

@@ -3,7 +3,6 @@ import UIKit
 /// A text box editor that accepts keyboard input and refuses Pencil Scribble.
 final class CanvasKeyboardTextView: UITextView, UITextViewDelegate, UIScribbleInteractionDelegate {
     var onTextChange: ((String) -> Void)?
-    var onEditingEnd: (() -> Void)?
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
@@ -31,10 +30,6 @@ final class CanvasKeyboardTextView: UITextView, UITextViewDelegate, UIScribbleIn
 
     func textViewDidChange(_ textView: UITextView) {
         onTextChange?(textView.text ?? "")
-    }
-
-    func textViewDidEndEditing(_ textView: UITextView) {
-        onEditingEnd?()
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {

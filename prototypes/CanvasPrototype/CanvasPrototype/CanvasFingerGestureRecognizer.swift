@@ -11,6 +11,8 @@ enum CanvasFingerGestureEvent {
 /// Captures one finger path for page tools. It does not cancel PencilKit input.
 final class CanvasFingerGestureRecognizer: UIGestureRecognizer {
     var onEvent: ((CanvasFingerGestureEvent) -> Void)?
+    /// A transform needs only its endpoints; a lasso retains its complete path.
+    var recordsFullPath = true
 
     private weak var activeTouch: UITouch?
     private(set) var points: [CGPoint] = []
@@ -59,9 +61,13 @@ final class CanvasFingerGestureRecognizer: UIGestureRecognizer {
     }
 
     override func reset() {
+        let hadActiveTouch = activeTouch != nil
         super.reset()
         activeTouch = nil
         points = []
+        recordsFullPath = true
+        // A second touch or a disabled tool can stop a path without touchesCancelled.
+        if hadActiveTouch { onEvent?(.cancelled) }
     }
 
     override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -73,6 +79,10 @@ final class CanvasFingerGestureRecognizer: UIGestureRecognizer {
     }
 
     private func append(_ point: CGPoint) {
+        if !recordsFullPath, let start = points.first {
+            points = [start, point]
+            return
+        }
         guard let previous = points.last else {
             points.append(point)
             return

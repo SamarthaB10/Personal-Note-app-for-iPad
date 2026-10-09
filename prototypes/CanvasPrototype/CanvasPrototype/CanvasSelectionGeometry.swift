@@ -1,7 +1,75 @@
 import CoreGraphics
 import PencilKit
+import UIKit
 
 enum CanvasSelectionGeometry {
+    /// A lasso tap selects one complete object without starting text editing.
+    static func selectObject(
+        at point: CGPoint,
+        drawing: PKDrawing,
+        textBoxes: [CanvasTextBox],
+        shapes: [CanvasShape]
+    ) -> CanvasSelection {
+        if let box = textBoxes.reversed().first(where: { textContentBounds($0).contains(point) }) {
+            return CanvasSelection(textBoxIDs: [box.id])
+        }
+        if let shape = shapes.reversed().first(where: { $0.renderBounds.contains(point) }) {
+            return CanvasSelection(shapeIDs: [shape.id])
+        }
+        if let index = drawing.strokes.indices.reversed().first(where: { index in
+            strokeSamples(drawing.strokes[index]).contains { sample in
+                hypot(point.x - sample.location.x, point.y - sample.location.y) <= sample.radius + 6
+            }
+        }) {
+            return CanvasSelection(strokeIndices: [index])
+        }
+
+        // Do not guess which invisible box area the user meant when frames overlap.
+        let boxes = textBoxes.filter { $0.frame.contains(point) }
+        guard boxes.count == 1, let box = boxes.first else { return CanvasSelection() }
+        return CanvasSelection(textBoxIDs: [box.id])
+    }
+
+    /// Includes nearby visible text so stacked boxes can be chosen by their preview.
+    static func textBoxCandidates(at point: CGPoint, in textBoxes: [CanvasTextBox]) -> [CanvasTextBox] {
+        let directBounds = textBoxes.map(textContentBounds).filter { $0.contains(point) }
+        let visible = textBoxes.filter { box in
+            let bounds = textContentBounds(box)
+            guard !bounds.isNull, !bounds.isEmpty else { return false }
+            return bounds.insetBy(dx: -18, dy: -18).contains(point)
+                || directBounds.contains { $0.intersects(bounds) }
+        }
+        // Direct frame hits include empty and obscured boxes in the explicit chooser.
+        let visibleIDs = Set(visible.map(\.id))
+        return Array(textBoxes.filter { visibleIDs.contains($0.id) || $0.frame.contains(point) }.reversed())
+    }
+
+    /// A drag includes gaps in selected handwriting and avoids other visible targets.
+    static func directSelectionContains(_ point: CGPoint, selection: CanvasSelection, in page: CanvasPageData) -> Bool {
+        let drawing = (try? PKDrawing(data: page.inkDrawingData)) ?? PKDrawing()
+        if page.textBoxes.contains(where: {
+            !selection.textBoxIDs.contains($0.id) && textContentBounds($0).contains(point)
+        }) || page.shapes.contains(where: {
+            !selection.shapeIDs.contains($0.id) && $0.renderBounds.contains(point)
+        }) || drawing.strokes.enumerated().contains(where: { index, stroke in
+            !selection.strokeIndices.contains(index) && strokeContains(point, stroke: stroke, padding: 6)
+        }) { return false }
+
+        let inkBounds = selection.strokeIndices.compactMap { index in
+            drawing.strokes.indices.contains(index) ? drawing.strokes[index].renderBounds : nil
+        }.reduce(CGRect.null) { $0.union($1) }
+        return (!inkBounds.isNull && inkBounds.insetBy(dx: -12, dy: -12).contains(point))
+            || page.textBoxes.contains { selection.textBoxIDs.contains($0.id) && $0.frame.contains(point) }
+            || page.shapes.contains { selection.shapeIDs.contains($0.id) && $0.renderBounds.contains(point) }
+    }
+
+    private static func strokeContains(_ point: CGPoint, stroke: PKStroke, padding: CGFloat) -> Bool {
+        guard stroke.renderBounds.insetBy(dx: -padding, dy: -padding).contains(point) else { return false }
+        return strokeSamples(stroke).contains { sample in
+            hypot(point.x - sample.location.x, point.y - sample.location.y) <= sample.radius + padding
+        }
+    }
+
     static func select(
         in rectangle: CGRect,
         drawing: PKDrawing,
@@ -133,6 +201,18 @@ enum CanvasSelectionGeometry {
         }
     }
 
+    static func textContentBounds(_ box: CanvasTextBox) -> CGRect {
+        let contentFrame = box.frame.insetBy(dx: 5, dy: 5)
+        guard !box.text.isEmpty, contentFrame.width > 0, contentFrame.height > 0 else { return .null }
+        let measured = (box.text as NSString).boundingRect(
+            with: contentFrame.size,
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: UIFont.systemFont(ofSize: box.fontSize)],
+            context: nil
+        )
+        return CGRect(origin: contentFrame.origin, size: measured.size).intersection(contentFrame)
+    }
+
     private static func corners(of rectangle: CGRect) -> [CGPoint] {
         [
             CGPoint(x: rectangle.minX, y: rectangle.minY),
@@ -142,7 +222,8 @@ enum CanvasSelectionGeometry {
         ]
     }
 
-    private static func contains(_ point: CGPoint, in polygon: [CGPoint]) -> Bool {
+    static func contains(_ point: CGPoint, in polygon: [CGPoint]) -> Bool {
+        guard polygon.count >= 3 else { return false }
         var inside = false
         var previous = polygon[polygon.count - 1]
 

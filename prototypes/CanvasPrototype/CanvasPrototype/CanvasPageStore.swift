@@ -7,7 +7,11 @@ import PencilKit
 final class CanvasPageStore: ObservableObject {
     @Published private(set) var page: CanvasPageData
     @Published private(set) var drawingRevision = 0
-    @Published var tool: CanvasTool = .pen
+    @Published var tool: CanvasTool = .pen {
+        didSet {
+            if tool != oldValue { cancelTextBoxChoice() }
+        }
+    }
     @Published var color: CanvasColor = .black
     @Published var inkWidth: CGFloat = 3
     @Published private(set) var saveStatus = "Loading saved page…"
@@ -18,6 +22,12 @@ final class CanvasPageStore: ObservableObject {
     @Published private(set) var selectionBounds: CGRect?
     @Published private(set) var lassoPreview: [CGPoint] = []
     @Published private(set) var editingTextBoxID: UUID?
+    @Published private(set) var selectionOutline: [CGPoint] = []
+    @Published private(set) var textBoxCandidates: [CanvasTextBox] = []
+    @Published private(set) var previewTextBoxID: UUID?
+
+    var textBoxChoiceStartsEditing: Bool { textBoxChoiceIntent == .edit }
+
 
     var onFlushCanvasDrawing: (() -> Void)?
 
@@ -28,6 +38,18 @@ final class CanvasPageStore: ObservableObject {
     private var scratchUndoStack: [[RemovedStroke]] = []
     private var pendingPageSave: DispatchWorkItem?
     private var canSave = true
+    private var textBoxChoiceIntent: TextBoxChoiceIntent?
+    private var selectionTransform: SelectionTransform?
+
+    private enum TextBoxChoiceIntent { case edit, select }
+
+    private struct SelectionTransform {
+        var page: CanvasPageData
+        var selection: CanvasSelection
+        var outline: [CGPoint]
+        var anchor: CGPoint
+        var changed = false
+    }
 
     private struct RemovedStroke {
         var index: Int
@@ -95,6 +117,8 @@ final class CanvasPageStore: ObservableObject {
     }
 
     func reloadSavedPage() {
+        cancelTextBoxChoice()
+        endSelectionTransform(cancelled: true)
         actionRevision += 1
         actionMessage = "Reopening page…"
         onFlushCanvasDrawing?()
@@ -192,8 +216,18 @@ final class CanvasPageStore: ObservableObject {
     }
 
     func addTextBox(at point: CGPoint) {
-        if let box = page.textBoxes.reversed().first(where: { $0.frame.insetBy(dx: -12, dy: -12).contains(point) }) {
-            editingTextBoxID = box.id
+        cancelTextBoxChoice()
+        let candidates = CanvasSelectionGeometry.textBoxCandidates(at: point, in: page.textBoxes)
+        if candidates.count > 1 {
+            startTextBoxChoice(candidates, intent: .edit)
+            return
+        }
+        if let box = candidates.first {
+            if box.frame.contains(point) {
+                editingTextBoxID = box.id
+            } else {
+                startTextBoxChoice(candidates, intent: .edit)
+            }
             return
         }
 
@@ -207,6 +241,39 @@ final class CanvasPageStore: ObservableObject {
         )
         page = updated
         persist()
+    }
+
+    func previewTextBoxChoice(_ id: UUID) {
+        guard textBoxCandidates.contains(where: { $0.id == id }) else { return }
+        previewTextBoxID = id
+    }
+
+    func chooseTextBox(_ id: UUID) {
+        guard textBoxCandidates.contains(where: { $0.id == id }),
+              page.textBoxes.contains(where: { $0.id == id }),
+              let intent = textBoxChoiceIntent else { return }
+        cancelTextBoxChoice()
+        if intent == .edit {
+            editingTextBoxID = id
+        } else {
+            finishTextEditing()
+            selection = CanvasSelection(textBoxIDs: [id])
+            selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
+            selectionOutline = []
+            lassoPreview = []
+        }
+    }
+
+    func cancelTextBoxChoice() {
+        textBoxCandidates = []
+        previewTextBoxID = nil
+        textBoxChoiceIntent = nil
+    }
+
+    private func startTextBoxChoice(_ candidates: [CanvasTextBox], intent: TextBoxChoiceIntent) {
+        textBoxCandidates = candidates
+        previewTextBoxID = nil
+        textBoxChoiceIntent = intent
     }
 
     func addRectangle(from start: CGPoint, to end: CGPoint) {
@@ -239,26 +306,109 @@ final class CanvasPageStore: ObservableObject {
         lassoPreview = points
     }
 
+    func selectObject(at point: CGPoint) {
+        onFlushCanvasDrawing?()
+        cancelTextBoxChoice()
+        let candidates = CanvasSelectionGeometry.textBoxCandidates(at: point, in: page.textBoxes)
+        if candidates.count > 1 {
+            startTextBoxChoice(candidates, intent: .select)
+            return
+        }
+        finishTextEditing()
+        selection = candidates.first.map { CanvasSelection(textBoxIDs: [$0.id]) }
+            ?? CanvasSelectionGeometry.selectObject(
+            at: point,
+            drawing: drawing,
+            textBoxes: page.textBoxes,
+            shapes: page.shapes
+        )
+        lassoPreview = []
+        selectionOutline = []
+        selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
+    }
+
     func finishFreehandLasso(_ points: [CGPoint]) {
+        cancelTextBoxChoice()
         selection = CanvasSelectionGeometry.select(
             inside: points,
             drawing: drawing,
             textBoxes: page.textBoxes,
             shapes: page.shapes
         )
+        selectionOutline = selection.isEmpty ? [] : points
         lassoPreview = []
         selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
     }
 
     func finishBoxLasso(from start: CGPoint, to end: CGPoint) {
+        cancelTextBoxChoice()
         selection = CanvasSelectionGeometry.select(
             in: CGRect(x: start.x, y: start.y, width: end.x - start.x, height: end.y - start.y),
             drawing: drawing,
             textBoxes: page.textBoxes,
             shapes: page.shapes
         )
+        selectionOutline = selection.isEmpty ? [] : [
+            start, CGPoint(x: end.x, y: start.y), end, CGPoint(x: start.x, y: end.y)
+        ]
         lassoPreview = []
         selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
+    }
+
+    func directSelectionContains(_ point: CGPoint) -> Bool {
+        guard !selection.isEmpty, textBoxCandidates.isEmpty else { return false }
+        if !selectionOutline.isEmpty,
+           !CanvasSelectionGeometry.contains(point, in: selectionOutline) { return false }
+        return CanvasSelectionGeometry.directSelectionContains(point, selection: selection, in: page)
+    }
+
+    /// The surface previews the drag locally. This snapshot supports one final transform.
+    func beginSelectionTransform() {
+        guard selectionTransform == nil else { return }
+        onFlushCanvasDrawing?()
+        guard let bounds = selectionBounds, !selection.isEmpty else { return }
+        selectionTransform = SelectionTransform(
+            page: page, selection: selection, outline: selectionOutline,
+            anchor: CGPoint(x: bounds.midX, y: bounds.midY)
+        )
+    }
+
+    /// Translation and scale are cumulative from the initial snapshot; this does not save.
+    func updateSelectionTransform(translation: CGPoint, scale: CGFloat) {
+        guard var snapshot = selectionTransform, translation.x.isFinite,
+              translation.y.isFinite, scale.isFinite else { return }
+        page = CanvasSelectionGeometry.transformed(
+            snapshot.page, selection: snapshot.selection, scale: scale,
+            translation: translation, around: snapshot.anchor
+        )
+        selectionOutline = transformedOutline(snapshot.outline, scale: scale, translation: translation, around: snapshot.anchor)
+        selectionBounds = CanvasSelectionGeometry.bounds(of: snapshot.selection, in: page)
+        snapshot.changed = translation != .zero || scale != 1
+        selectionTransform = snapshot
+        if !snapshot.selection.strokeIndices.isEmpty { drawingRevision += 1 }
+    }
+
+    func endSelectionTransform(cancelled: Bool) {
+        guard let snapshot = selectionTransform else { return }
+        selectionTransform = nil
+        if cancelled {
+            page = snapshot.page
+            selection = snapshot.selection
+            selectionOutline = snapshot.outline
+            selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
+            if snapshot.changed, !selection.strokeIndices.isEmpty { drawingRevision += 1 }
+        } else if snapshot.changed {
+            if !selection.strokeIndices.isEmpty { clearScratchUndoHistory() }
+            persist()
+        }
+    }
+
+    private func transformedOutline(_ points: [CGPoint], scale: CGFloat, translation: CGPoint, around anchor: CGPoint) -> [CGPoint] {
+        let scale = max(0.25, min(scale, 4))
+        return points.map { point in
+            CGPoint(x: anchor.x + (point.x - anchor.x) * scale + translation.x,
+                    y: anchor.y + (point.y - anchor.y) * scale + translation.y)
+        }
     }
 
     func moveSelection(by translation: CGPoint) {
@@ -271,9 +421,45 @@ final class CanvasPageStore: ObservableObject {
     }
 
     func clearSelection() {
+        cancelTextBoxChoice()
+        selectionTransform = nil
+        selectionOutline = []
         selection = CanvasSelection()
         selectionBounds = nil
         lassoPreview = []
+    }
+
+    /// Removes complete selected objects while retaining any newly flushed ink.
+    func deleteSelection() {
+        let selected = selection
+        let inkDataBeforeFlush = page.inkDrawingData
+        onFlushCanvasDrawing?()
+        guard !selected.isEmpty else { return }
+
+        let currentDrawing = drawing
+        let inkChangedDuringFlush = page.inkDrawingData != inkDataBeforeFlush
+        // Selected indices are safe only while the stored drawing stays unchanged.
+        let removableIndices = inkChangedDuringFlush ? Set<Int>() : Set(
+            selected.strokeIndices.filter { currentDrawing.strokes.indices.contains($0) }
+        )
+        var updated = page
+        if !removableIndices.isEmpty {
+            updated.inkDrawingData = CanvasSelectionGeometry.removingStrokes(removableIndices, from: currentDrawing).dataRepresentation()
+            clearScratchUndoHistory()
+        }
+        updated.textBoxes.removeAll { selected.textBoxIDs.contains($0.id) }
+        updated.shapes.removeAll { selected.shapeIDs.contains($0.id) }
+        if let editingTextBoxID, selected.textBoxIDs.contains(editingTextBoxID) {
+            finishTextEditing()
+        }
+        page = updated
+        if !removableIndices.isEmpty { drawingRevision += 1 }
+        clearSelection()
+        persist()
+        if inkChangedDuringFlush, !selected.strokeIndices.isEmpty {
+            actionRevision += 1
+            actionMessage = "Ink changed before Delete. Ink was kept. Select the ink again to delete it."
+        }
     }
 
     func scratchErase(drawingBefore: PKDrawing, path: [CGPoint], radius: CGFloat) -> PKDrawing {
@@ -328,6 +514,7 @@ final class CanvasPageStore: ObservableObject {
             drawingRevision += 1
             clearScratchUndoHistory()
         }
+        selectionOutline = transformedOutline(selectionOutline, scale: scale, translation: translation, around: anchor)
         selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
         persist()
     }
