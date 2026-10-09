@@ -1,0 +1,235 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A10000000000000000000001 /* CanvasPrototype */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CanvasPrototype;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXGroup section */
+		A10000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000001 /* CanvasPrototype */,
+				A10000000000000000000005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A10000000000000000000005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000004 /* CanvasPrototype.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXFileReference section */
+		A10000000000000000000004 /* CanvasPrototype.app */ = {
+			isa = PBXFileReference;
+			includeInIndex = 0;
+			lastKnownFileType = wrapper.application;
+			path = CanvasPrototype.app;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+/* End PBXFileReference section */
+
+/* Begin PBXNativeTarget section */
+		A10000000000000000000003 /* CanvasPrototype */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000012 /* Build configuration list for PBXNativeTarget "CanvasPrototype" */;
+			buildPhases = (
+				A10000000000000000000008 /* Sources */,
+				A10000000000000000000009 /* Frameworks */,
+				A1000000000000000000000A /* Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (
+				A10000000000000000000001 /* CanvasPrototype */,
+			);
+			name = CanvasPrototype;
+			productName = CanvasPrototype;
+			productReference = A10000000000000000000004 /* CanvasPrototype.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A10000000000000000000006 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					A10000000000000000000003 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+				};
+			};
+			buildConfigurationList = A1000000000000000000000B /* Build configuration list for PBXProject "CanvasPrototype" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			mainGroup = A10000000000000000000002;
+			productRefGroup = A10000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A10000000000000000000003 /* CanvasPrototype */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXBuildFile section */
+/* End PBXBuildFile section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A10000000000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A10000000000000000000009 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1000000000000000000000A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A1000000000000000000000D /* Debug project settings */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A1000000000000000000000E /* Release project settings */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A1000000000000000000000F /* Debug target settings */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Canvas Prototype";
+				INFOPLIST_KEY_LSRequiresIPhoneOS = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.samarthab.CanvasPrototype;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		A10000000000000000000010 /* Release target settings */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Canvas Prototype";
+				INFOPLIST_KEY_LSRequiresIPhoneOS = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.samarthab.CanvasPrototype;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A1000000000000000000000B /* Build configuration list for PBXProject "CanvasPrototype" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000000000000000000000D /* Debug project settings */,
+				A1000000000000000000000E /* Release project settings */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000012 /* Build configuration list for PBXNativeTarget "CanvasPrototype" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000000000000000000000F /* Debug target settings */,
+				A10000000000000000000010 /* Release target settings */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin PBXProject section */
+/* End PBXProject section */
+	};
+	rootObject = A10000000000000000000006 /* Project object */;
+}
