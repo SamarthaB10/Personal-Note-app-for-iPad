@@ -8,7 +8,8 @@ enum CanvasSelectionGeometry {
         at point: CGPoint,
         drawing: PKDrawing,
         textBoxes: [CanvasTextBox],
-        shapes: [CanvasShape]
+        shapes: [CanvasShape],
+        images: [CanvasPageImage] = []
     ) -> CanvasSelection {
         if let box = textBoxes.reversed().first(where: { textContentBounds($0).contains(point) }) {
             return CanvasSelection(textBoxIDs: [box.id])
@@ -18,6 +19,9 @@ enum CanvasSelectionGeometry {
         }
         let inkSelection = selectInk(at: point, drawing: drawing)
         if !inkSelection.isEmpty { return inkSelection }
+        if let image = images.reversed().first(where: { $0.frame.contains(point) }) {
+            return CanvasSelection(imageIDs: [image.id])
+        }
 
         // Do not guess which invisible box area the user meant when frames overlap.
         let boxes = textBoxes.filter { $0.frame.contains(point) }
@@ -50,7 +54,7 @@ enum CanvasSelectionGeometry {
     /// A drag includes gaps in selected handwriting and avoids other visible targets.
     static func directSelectionContains(_ point: CGPoint, selection: CanvasSelection, in page: CanvasPageData) -> Bool {
         let drawing = (try? PKDrawing(data: page.inkDrawingData)) ?? PKDrawing()
-        if page.textBoxes.contains(where: {
+        if page.images.contains(where: { !selection.imageIDs.contains($0.id) && $0.frame.contains(point) }) || page.textBoxes.contains(where: {
             !selection.textBoxIDs.contains($0.id) && textContentBounds($0).contains(point)
         }) || page.shapes.contains(where: {
             !selection.shapeIDs.contains($0.id) && $0.renderBounds.contains(point)
@@ -64,6 +68,7 @@ enum CanvasSelectionGeometry {
         return (!inkBounds.isNull && inkBounds.insetBy(dx: -12, dy: -12).contains(point))
             || page.textBoxes.contains { selection.textBoxIDs.contains($0.id) && $0.frame.contains(point) }
             || page.shapes.contains { selection.shapeIDs.contains($0.id) && $0.renderBounds.contains(point) }
+            || page.images.contains { selection.imageIDs.contains($0.id) && $0.frame.contains(point) }
     }
 
     private static func strokeContains(_ point: CGPoint, stroke: PKStroke, padding: CGFloat) -> Bool {
@@ -83,7 +88,8 @@ enum CanvasSelectionGeometry {
         in rectangle: CGRect,
         drawing: PKDrawing,
         textBoxes: [CanvasTextBox],
-        shapes: [CanvasShape]
+        shapes: [CanvasShape],
+        images: [CanvasPageImage] = []
     ) -> CanvasSelection {
         let area = rectangle.standardized
         return CanvasSelection(
@@ -91,7 +97,8 @@ enum CanvasSelectionGeometry {
                 strokeTouches(stroke, path: corners(of: area), includesInterior: true, closesPath: true) ? index : nil
             }),
             textBoxIDs: Set(textBoxes.compactMap { area.contains($0.frame) ? $0.id : nil }),
-            shapeIDs: Set(shapes.compactMap { area.contains($0.renderBounds) ? $0.id : nil })
+            shapeIDs: Set(shapes.compactMap { area.contains($0.renderBounds) ? $0.id : nil }),
+            imageIDs: Set(images.compactMap { area.intersects($0.frame) ? $0.id : nil })
         )
     }
 
@@ -99,7 +106,8 @@ enum CanvasSelectionGeometry {
         inside polygon: [CGPoint],
         drawing: PKDrawing,
         textBoxes: [CanvasTextBox],
-        shapes: [CanvasShape]
+        shapes: [CanvasShape],
+        images: [CanvasPageImage] = []
     ) -> CanvasSelection {
         guard polygon.count >= 2 else { return CanvasSelection() }
 
@@ -108,7 +116,10 @@ enum CanvasSelectionGeometry {
                 strokeTouches(stroke, path: polygon, includesInterior: polygon.count >= 3, closesPath: polygon.count >= 3) ? index : nil
             }),
             textBoxIDs: Set(textBoxes.compactMap { contains($0.frame, in: polygon) ? $0.id : nil }),
-            shapeIDs: Set(shapes.compactMap { contains($0.renderBounds, in: polygon) ? $0.id : nil })
+            shapeIDs: Set(shapes.compactMap { contains($0.renderBounds, in: polygon) ? $0.id : nil }),
+            imageIDs: Set(images.compactMap { image in
+                contains(image.frame, in: polygon) || polygon.contains(where: image.frame.contains) ? image.id : nil
+            })
         )
     }
 
@@ -128,6 +139,9 @@ enum CanvasSelectionGeometry {
             result = result.map { $0.union(shape.renderBounds) } ?? shape.renderBounds
         }
 
+        for image in page.images where selection.imageIDs.contains(image.id) {
+            result = result.map { $0.union(image.frame) } ?? image.frame
+        }
         return result
     }
 
@@ -165,6 +179,12 @@ enum CanvasSelectionGeometry {
             var moved = box
             moved.frame = box.frame.applying(worldTransform).standardized
             moved.fontSize *= uniformScale
+            return moved
+        }
+        updated.images = page.images.map { image in
+            guard selection.imageIDs.contains(image.id) else { return image }
+            var moved = image
+            moved.frame = image.frame.applying(worldTransform).standardized
             return moved
         }
         updated.shapes = page.shapes.map { shape in

@@ -53,7 +53,7 @@ enum CanvasExportSnapshotAdapter {
                 legacyRectangles: try page.shapes.map {
                     ExportLegacyRectangle(frame: $0.frame, width: $0.lineWidth,
                                           color: try fixedColor($0.color))
-                })
+                }, images: page.images)
         }
         return ExportNotebookSnapshot(title: notebook.title, pages: result)
     }

@@ -4,7 +4,7 @@ import UIKit
 enum NotebookExportScope: Sendable { case currentPage, completeNotebook }
 
 /// The host captures content at the time of the tap, including the active text editor.
-/// Put this control beside the import worker's explicit Import from Files button.
+/// Keep this control mounted in the notebook's single toolbar during page changes.
 @MainActor
 struct NotebookExportToFilesControl: View {
     let captureSnapshot: @MainActor (NotebookExportScope) async throws -> ExportNotebookSnapshot
@@ -18,20 +18,23 @@ struct NotebookExportToFilesControl: View {
     @State private var exportTask: Task<Void, Never>?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Menu {
-                Button("Current page") { start(.currentPage) }
-                Button("Complete notebook") { start(.completeNotebook) }
-            } label: {
-                Text(rendering ? "Preparing PDF…" : "Export to Files")
-                    .frame(minHeight: 44)
-            }
-            .disabled(rendering || artifact != nil)
-            .accessibilityHint("Save the current page or complete notebook as a PDF.")
-            if let message {
-                Text(message).font(.caption).accessibilityAddTraits(.updatesFrequently)
-            }
+        Menu {
+            Button("Current page") { start(.currentPage) }
+            Button("Complete notebook") { start(.completeNotebook) }
+        } label: {
+            CanvasToolbarIcon(kind: .fileOutput)
+                .overlay {
+                    if rendering {
+                        ProgressView().scaleEffect(0.65)
+                            .padding(10).background(.regularMaterial, in: Circle())
+                    }
+                }
         }
+        .disabled(rendering || artifact != nil)
+        .accessibilityLabel(rendering ? "Preparing PDF" : "Export to Files")
+        .accessibilityHint("Save the current page or complete notebook as a PDF.")
+        .accessibilityValue(message ?? "")
+        .help("Export to Files")
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false; exportTask?.cancel() }
         .sheet(item: $artifact, onDismiss: pickerDismissed) { item in

@@ -37,28 +37,12 @@ struct CanvasNotebookView: View {
     var body: some View {
         let entries = orderedPages
         VStack(spacing: 0) {
-            HStack {
-                Text(library.folderName(for: currentNotebook.folderID)).foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                NotebookExportToFilesControl(captureSnapshot: captureExportSnapshot)
-                    .disabled(isNavigating || importRequest != nil)
-            }
-            .padding(.horizontal, 12)
-            .background(Color(uiColor: .secondarySystemBackground))
-            if let importMessage { Text(importMessage).font(.callout).padding(12) }
-            if let navigationError {
-                Text(navigationError).font(.callout).foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(Color(uiColor: .secondarySystemBackground))
-                    .accessibilityLabel("Notebook error: \(navigationError)")
-            }
             if !entries.isEmpty {
                 let activeIndex = min(pageIndex, entries.count - 1)
                 CanvasPrototypeRootView(
-                    store: entries[activeIndex].store, pages: entries,
+                    store: entries[activeIndex].store, undoHistory: library.undoHistory, pages: entries,
                     notebookTitle: currentNotebook.title,
+                    importMessage: importMessage, navigationError: navigationError,
                     pageNumber: activeIndex + 1, pageCount: currentNotebook.pageIDs.count,
                     defaultPaper: currentNotebook.defaultPaper,
                     isNavigating: isNavigating, isAddingPage: isAddingPage,
@@ -71,6 +55,7 @@ struct CanvasNotebookView: View {
                     onZoomChange: { zoomPercent = $0 }, onAddPage: addPage,
                     onAddPageAfterCurrent: addPageAfterCurrent,
                     onImportPDF: startPDFImport,
+                    captureExportSnapshot: captureExportSnapshot,
                     onDefaultPaperChange: setDefaultPaper,
                     onAppearanceChange: { appearanceValue = $0.rawValue }
                 )
@@ -97,6 +82,9 @@ struct CanvasNotebookView: View {
             Text("Are you sure? Page \(request.pageNumber) will move to Trash. You can restore it later.")
         }
         .preferredColorScheme(appearance.colorScheme)
+        .onChange(of: library.notebooks.map(\.id)) { _, ids in
+            if !ids.contains(notebook.id) { onClose() }
+        }
         .onChange(of: appearance, initial: true) { _, value in
             CanvasToolSettings.shared.applyAppearance(value)
         }

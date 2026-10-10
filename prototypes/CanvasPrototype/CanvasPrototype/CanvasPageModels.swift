@@ -258,13 +258,14 @@ struct CanvasShape: Codable, Hashable, Identifiable {
     }
 }
 
-struct CanvasPageData: Codable {
+struct CanvasPageData: Codable, Equatable {
     var inkDrawingData: Data
     var textBoxes: [CanvasTextBox]
     var shapes: [CanvasShape]
     var scratchEraseEnabled: Bool
     var paper: CanvasPaper = .blank
     var importedBackground: CanvasImportedBackground?
+    var images: [CanvasPageImage] = []
 
     init(inkDrawingData: Data, textBoxes: [CanvasTextBox], shapes: [CanvasShape],
          scratchEraseEnabled: Bool, paper: CanvasPaper = .blank,
@@ -278,7 +279,7 @@ struct CanvasPageData: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case inkDrawingData, textBoxes, shapes, scratchEraseEnabled, paper, importedBackground
+        case inkDrawingData, textBoxes, shapes, scratchEraseEnabled, paper, importedBackground, images
     }
 
     init(from decoder: Decoder) throws {
@@ -289,6 +290,7 @@ struct CanvasPageData: Codable {
         scratchEraseEnabled = try values.decode(Bool.self, forKey: .scratchEraseEnabled)
         paper = try values.decodeIfPresent(CanvasPaper.self, forKey: .paper) ?? .blank
         importedBackground = try values.decodeIfPresent(CanvasImportedBackground.self, forKey: .importedBackground)
+        images = try values.decodeIfPresent([CanvasPageImage].self, forKey: .images) ?? []
     }
 
     static let empty = CanvasPageData(
@@ -303,9 +305,10 @@ struct CanvasSelection: Equatable {
     var strokeIndices: Set<Int> = []
     var textBoxIDs: Set<UUID> = []
     var shapeIDs: Set<UUID> = []
+    var imageIDs: Set<UUID> = []
 
     var isEmpty: Bool {
-        strokeIndices.isEmpty && textBoxIDs.isEmpty && shapeIDs.isEmpty
+        strokeIndices.isEmpty && textBoxIDs.isEmpty && shapeIDs.isEmpty && imageIDs.isEmpty
     }
 }
 

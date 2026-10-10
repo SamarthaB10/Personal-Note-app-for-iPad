@@ -9,7 +9,7 @@ enum CanvasToolControl: CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .pen: "Pen"
-        case .marker: "Marker"
+        case .marker: "Highlighter"
         case .eraser: "Eraser"
         case .textBox: "Text box"
         case .rectangle: "Shapes"

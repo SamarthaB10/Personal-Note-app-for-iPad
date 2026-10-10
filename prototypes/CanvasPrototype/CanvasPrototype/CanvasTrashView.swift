@@ -8,6 +8,9 @@ struct CanvasTrashView: View {
     var body: some View {
         NavigationStack {
             List {
+                if let error = store.undoHistory.errorMessage {
+                    Text(error).foregroundStyle(.red).accessibilityLabel("Undo error: \(error)")
+                }
                 if let error = store.errorMessage {
                     Text(error).foregroundStyle(.red).accessibilityLabel("Trash error: \(error)")
                 }
@@ -32,8 +35,15 @@ struct CanvasTrashView: View {
                 }
             }
             .navigationTitle("Trash")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .disabled(store.isChangingTrash)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { Task { await store.undoHistory.undo() } } label: { CanvasLucideIcon(kind: .undo) }
+                        .disabled(store.undoHistory.count == 0 || store.undoHistory.isUndoing)
+                        .accessibilityLabel("Undo, \(store.undoHistory.count) of 7 steps available")
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .disabled(store.isChangingTrash || store.undoHistory.isUndoing)
             .confirmationDialog("Delete this item permanently?", isPresented: Binding(
                 get: { permanentDeleteID != nil }, set: { if !$0 { permanentDeleteID = nil } }
             ), titleVisibility: .visible) {

@@ -1,10 +1,14 @@
 import SwiftUI
+import PhotosUI
 
 /// Notebook controls remain outside the zoomed page column.
 struct CanvasPrototypeRootView: View {
     @ObservedObject var store: CanvasPageStore
+    @ObservedObject var undoHistory: CanvasUndoHistory
     let pages: [CanvasNotebookPage]
     let notebookTitle: String
+    let importMessage: String?
+    let navigationError: String?
     let pageNumber: Int
     let pageCount: Int
     let defaultPaper: CanvasPaper
@@ -23,15 +27,31 @@ struct CanvasPrototypeRootView: View {
     let onAddPage: () -> Void
     let onAddPageAfterCurrent: () -> Void
     let onImportPDF: () -> Void
+    let captureExportSnapshot: @MainActor (NotebookExportScope) async throws -> ExportNotebookSnapshot
     let onDefaultPaperChange: (CanvasPaper) -> Void
     let onAppearanceChange: (CanvasAppearance) -> Void
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var showsPhotos = false
+    @State private var imageTarget: CanvasPageStore?
+    @State private var isLoadingImage = false
     @State private var settingsControl: CanvasToolControl?
     @State private var showsSelectionActions = false
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            toolBar
+            Text(notebookTitle).font(.headline).lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 12).padding(.vertical, 4)
+                .accessibilityAddTraits(.isHeader)
+            if let importMessage { Text(importMessage).font(.callout).padding(12) }
+            if let navigationError {
+                Text(navigationError).font(.callout).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color(uiColor: .secondarySystemBackground))
+                    .accessibilityLabel("Notebook error: \(navigationError)")
+            }
+            if let error = undoHistory.errorMessage { Text(error).font(.footnote).foregroundStyle(.red).padding(8) }
             if store.actionMessage != nil || !store.canWrite || store.hasSaveError {
                 saveStatus
             }
@@ -49,6 +69,11 @@ struct CanvasPrototypeRootView: View {
                     onVisiblePageChange: onVisiblePageChange, onZoomChange: onZoomChange,
                     onAddPage: onAddPage
                 )
+                .overlay {
+                    CanvasFloatingToolbar(availableSize: geometry.size, selectedIcon: activeToolIcon, history: undoHistory, permitsUndo: !isNavigating && !isAddingPage && !isChangingPaper, onUndo: undo) { vertical in
+                        toolBar(vertical: vertical)
+                    }
+                }
                 .overlay(alignment: .bottomTrailing) {
                     if !store.textBoxCandidates.isEmpty {
                         CanvasTextBoxChooser(store: store, listHeight: min(240, max(88, geometry.size.height - 180)))
@@ -58,6 +83,22 @@ struct CanvasPrototypeRootView: View {
                 }
             }
         }
+        .allowsHitTesting(!undoHistory.isUndoing)
+        .photosPicker(isPresented: $showsPhotos, selection: $selectedPhoto, matching: .images, preferredItemEncoding: .current)
+        .onChange(of: selectedPhoto) { _, selection in
+            guard let selection, let target = imageTarget else { return }
+            isLoadingImage = true
+            Task {
+                do {
+                    guard let data = try await selection.loadTransferable(type: Data.self) else { throw CanvasImageAdapter.ImageError.unreadable }
+                    let image = try await CanvasImageAdapter.prepare(data)
+                    try await target.insertPreparedImages([image])
+                } catch { target.showImageError(error) }
+                isLoadingImage = false
+                selectedPhoto = nil
+                imageTarget = nil
+            }
+        }
         .background(Color(uiColor: .systemBackground))
         .onChange(of: pageNumber) { _, _ in
             showsSelectionActions = false
@@ -65,103 +106,117 @@ struct CanvasPrototypeRootView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 8) {
+    private var navigationControls: some View {
+        Group {
             Button(action: onBack) {
-                CanvasLucideIcon(kind: .home).frame(width: 44, height: 44)
+                CanvasToolbarIcon(kind: .home)
             }
             .disabled(isNavigating || isAddingPage || isChangingPaper)
             .accessibilityLabel("Home")
             .accessibilityHint("Return to this notebook’s folder")
             Button(action: onDeleteCurrentPage) {
-                CanvasLucideIcon(kind: .trash).frame(width: 44, height: 44)
+                CanvasToolbarIcon(kind: .trash)
             }
             .disabled(!canDeleteCurrentPage)
             .accessibilityLabel("Delete current page")
             .accessibilityHint("Ask before moving this page to Trash. Keep at least one page.")
             .help("Delete current page")
-            VStack(alignment: .leading, spacing: 2) {
-                Text(notebookTitle).font(.headline).lineLimit(1)
-                    .accessibilityAddTraits(.isHeader)
-                Text("Page \(pageNumber) of \(pageCount)").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
             Menu {
                 ForEach(1...max(1, pageCount), id: \.self) { number in
                     Button("Page \(number)") { onPageChange(number - 1) }
                 }
             } label: {
-                Text("Pages").frame(minWidth: 44, minHeight: 44)
+                CanvasToolbarIcon(kind: .files)
             }
             .disabled(isNavigating)
             .accessibilityLabel("Choose page, current page \(pageNumber) of \(pageCount)")
+            .help("Pages")
             Menu {
                 Button("Add Page", action: onAddPageAfterCurrent)
                 Button("Import PDF", action: onImportPDF)
             } label: {
-                CanvasLucideIcon(kind: .plus).frame(width: 44, height: 44)
+                CanvasToolbarIcon(kind: .plus)
             }
                 .accessibilityLabel("Add page or import PDF")
                 .disabled(isNavigating || isAddingPage || isChangingPaper
                           || pageCount >= CanvasNotebook.maximumPageCount)
                 .accessibilityHint("Add a page after the current page")
-            Button("Import from Files", action: onImportPDF)
-                .frame(minHeight: 44)
+                .help("Add page or import PDF")
+            Button(action: onImportPDF) { CanvasToolbarIcon(kind: .fileInput) }
+                .accessibilityLabel("Import from Files")
+                .help("Import PDF from Files")
                 .disabled(isNavigating || isAddingPage || isChangingPaper || pageCount >= CanvasNotebook.maximumPageCount)
-            Text("\(zoomPercent)%")
-                .font(.subheadline).monospacedDigit().frame(minWidth: 44)
-                .accessibilityLabel("Zoom \(zoomPercent) percent")
-            if store.editingTextBoxID != nil {
-                Button("Done") { store.finishTextEditing() }
-                    .fontWeight(.semibold).frame(minWidth: 44, minHeight: 44)
-                    .accessibilityHint("Finish typing in the text box")
+            Button { store.finishTextEditing(); imageTarget = store; showsPhotos = true } label: {
+                CanvasToolbarIcon(kind: .imagePlus)
             }
+            .disabled(isLoadingImage || !store.canWrite)
+            .accessibilityLabel(isLoadingImage ? "Loading image" : "Add image from Photos")
+            NotebookExportToFilesControl(captureSnapshot: captureExportSnapshot)
+                .disabled(isNavigating)
         }
-        .font(.subheadline)
-        .padding(.horizontal, 12)
-        .frame(minHeight: 44)
-        .background(Color(uiColor: .systemBackground))
     }
 
-    private var toolBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
+    private func toolBar(vertical: Bool) -> some View {
+        let layout = vertical ? AnyLayout(VStackLayout(spacing: 2)) : AnyLayout(HStackLayout(spacing: 2))
+        return ScrollView(vertical ? .vertical : .horizontal, showsIndicators: false) {
+            layout {
+                navigationControls
+                Divider().frame(width: vertical ? 24 : 1, height: vertical ? 1 : 24).padding(4)
                 ForEach(CanvasToolControl.allCases) { control in toolButton(control) }
-                Divider().frame(height: 28).padding(.horizontal, 8)
+                Divider().frame(width: vertical ? 24 : 1, height: vertical ? 1 : 24).padding(4)
                 paperMenu
                 appearanceMenu
-                if store.canUndoScratch {
-                    Button { store.undoLastScratchErase() } label: {
-                        toolLabel(icon: .undo, title: "Undo")
-                    }
-                    .accessibilityLabel("Undo scratch erase")
-                    .accessibilityHint("Restore the ink removed by the last scratch erase")
-                }
                 if !store.selection.isEmpty {
                     Button { showsSelectionActions.toggle() } label: {
-                        toolLabel(icon: .settings, title: "Selection")
+                        CanvasToolbarIcon(kind: .settings)
                     }
                     .accessibilityLabel("Selection actions, \(store.selectionSummary)")
                     .popover(isPresented: $showsSelectionActions) {
                         CanvasSelectionActionsView(store: store) { showsSelectionActions = false }
                     }
                 }
+                if store.editingTextBoxID != nil {
+                    Button { store.finishTextEditing() } label: { CanvasToolbarIcon(kind: .check) }
+                        .accessibilityLabel("Done")
+                        .accessibilityHint("Finish typing in the text box")
+                        .help("Finish typing")
+                }
+                Text("\(zoomPercent)%").font(.caption).monospacedDigit()
+                    .frame(minWidth: 44)
+                    .accessibilityLabel("Zoom \(zoomPercent) percent")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Color.primary)
-            .padding(.horizontal, 12)
+            .foregroundStyle(Color.accentColor)
+            .padding(vertical ? .vertical : .horizontal, 2)
         }
-        .frame(height: 56)
-        .background(Color(uiColor: .secondarySystemBackground))
-        .overlay(alignment: .bottom) { Divider() }
-        .accessibilityLabel("Notebook tools")
+        .frame(width: vertical ? 44 : nil, height: vertical ? nil : 44)
+        .accessibilityLabel("Notebook controls and writing tools")
+    }
+
+    private var activeToolIcon: CanvasLucideIcon.Kind {
+        (CanvasToolControl.allCases.first { $0.contains(store.tool) } ?? .pen).icon(in: store)
+    }
+
+    private func undo() {
+        guard !isNavigating, !isAddingPage, !isChangingPaper else { return }
+        pages.forEach { $0.store.finishTextEditing() }
+        Task {
+            // Finish the native text editor before checking active-input guards.
+            await Task.yield()
+            guard pages.allSatisfy({ $0.store.onCanPrepareForDestructiveChange?() != false }) else {
+                undoHistory.explainActiveInput()
+                return
+            }
+            pages.forEach { $0.store.saveLifecycleSnapshot() }
+            await undoHistory.undo()
+        }
     }
 
     private func toolButton(_ control: CanvasToolControl) -> some View {
         let tool = control.tool(in: store)
         let selected = control.contains(store.tool)
         return ZStack {
-            toolLabel(icon: control.icon(in: store), title: control.title)
+            CanvasToolbarIcon(kind: control.icon(in: store))
                 .background(selected ? Color.accentColor.opacity(0.12) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 8))
                 .foregroundStyle(selected ? Color.accentColor : Color.primary)
@@ -176,22 +231,14 @@ struct CanvasPrototypeRootView: View {
                 }
             )
         }
-        .frame(width: 60, height: 52)
+        .frame(width: 44, height: 44)
+        .help(control.title)
         .popover(isPresented: Binding(
             get: { settingsControl == control },
             set: { if !$0, settingsControl == control { settingsControl = nil } }
         )) {
             CanvasToolSettingsView(store: store, control: control) { settingsControl = nil }
         }
-    }
-
-    private func toolLabel(icon: CanvasLucideIcon.Kind, title: String) -> some View {
-        VStack(spacing: 3) {
-            CanvasLucideIcon(kind: icon)
-            Text(title).font(.caption2).lineLimit(1)
-        }
-        .frame(width: 60, height: 52)
-        .contentShape(Rectangle())
     }
 
     private var paperMenu: some View {
@@ -210,9 +257,10 @@ struct CanvasPrototypeRootView: View {
                     }
                 }
             }
-        } label: { toolLabel(icon: .notebook, title: "Paper") }
+        } label: { CanvasToolbarIcon(kind: .notebook) }
         .disabled(isNavigating || isChangingPaper || isAddingPage || !store.canWrite)
         .accessibilityLabel("Paper, current page \(store.page.paper.title), new pages \(defaultPaper.title)")
+        .help("Paper")
     }
 
     private var appearanceMenu: some View {
@@ -222,9 +270,10 @@ struct CanvasPrototypeRootView: View {
                     Text(value == appearance ? "\(value.title) · Selected" : value.title)
                 }
             }
-        } label: { toolLabel(icon: .settings, title: appearance.title) }
+        } label: { CanvasToolbarIcon(kind: .sun) }
         .accessibilityLabel("Appearance, \(appearance.title)")
         .accessibilityHint("Change page and control appearance. Keep saved ink colors")
+        .help("Appearance")
     }
 
     private var saveStatus: some View {

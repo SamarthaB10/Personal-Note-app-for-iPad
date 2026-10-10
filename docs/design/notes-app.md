@@ -138,6 +138,13 @@ The issue 4 ticket still states no fixed page limit. The later explicit instruct
 - Offer a named color palette for custom folders. Save the color locally and preserve it during folder Trash restore. Old folders without a color use blue. Keep saved writing colors unchanged.
 - Keep notebook Delete and Move in the same press-and-hold menu on the notebook cover.
 
+## Accepted compact notebook header on 10 October 2026
+
+- Put the notebook name on its own line at the top.
+- Put navigation, page actions, writing tools, paper, and appearance in one compact row. Use icons for Home, Delete, Pages, Add Page, Import from Files, and Export to Files. Remove visible tool captions and the separate folder/export bar.
+- Keep the existing menus, confirmation, import/export scopes, and tool press-and-hold settings. Keep accessible names and 44-point tap areas. Permit horizontal scrolling when the window cannot fit the row.
+- Keep the zoom percentage visible as a compact number. Show errors and operation notices below the row when needed.
+
 ## Required behavior checks for a future build
 
 These are manual scenarios, not automated tests. No unit or integration tests are requested.

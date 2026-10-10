@@ -29,6 +29,7 @@ final class CanvasToolSettings: ObservableObject {
     @Published var inkWidth: CGFloat {
         didSet { defaults.set(Double(inkWidth), forKey: Self.key("\(tool.rawValue).width")) }
     }
+    @Published private(set) var highlighterOpacity: CGFloat
     @Published var shapeKind: CanvasShapeKind {
         didSet { defaults.set(shapeKind.rawValue, forKey: Self.key("shapeKind")) }
     }
@@ -46,6 +47,8 @@ final class CanvasToolSettings: ObservableObject {
         self.appearance = appearance
         let selected = defaults.string(forKey: Self.key("selected")).flatMap(CanvasTool.init(rawValue:)) ?? .pen
         tool = selected
+        let opacity = defaults.double(forKey: Self.key("highlighter.opacity"))
+        highlighterOpacity = opacity.isFinite && (0.1...0.8).contains(opacity) ? CGFloat(opacity) : 0.25
         let fontSize = defaults.double(forKey: Self.key("textBox.fontSize"))
         textFontSize = fontSize.isFinite && fontSize >= 8 && fontSize <= 96 ? CGFloat(fontSize) : 20
         shapeKind = defaults.string(forKey: Self.key("shapeKind"))
@@ -64,6 +67,13 @@ final class CanvasToolSettings: ObservableObject {
     func setWidth(_ width: CGFloat) {
         guard let valid = Self.validWidth(Double(width)) else { return }
         inkWidth = valid
+    }
+
+    /// Applies to future highlight strokes; saved strokes retain their own opacity.
+    func setHighlighterOpacity(_ opacity: CGFloat) {
+        guard opacity.isFinite else { return }
+        highlighterOpacity = min(0.8, max(0.1, opacity))
+        defaults.set(Double(highlighterOpacity), forKey: Self.key("highlighter.opacity"))
     }
 
     /// This default applies only when the user adds a new text box.

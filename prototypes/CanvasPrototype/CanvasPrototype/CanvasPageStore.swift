@@ -5,7 +5,19 @@ import PencilKit
 
 @MainActor
 final class CanvasPageStore: ObservableObject {
-    @Published private(set) var page: CanvasPageData
+    @Published private(set) var page: CanvasPageData {
+        didSet {
+            if page != oldValue, !isRestoringUndo, selectionTransform == nil {
+                onRecordUndo?(oldValue, undoGroup)
+            }
+        }
+    }
+    var onRecordUndo: ((CanvasPageData, UUID?) -> Void)?
+    var onRecordInkUndo: ((CanvasPageData, PKDrawing) -> Void)?
+    var permitsPreparedImage: (() -> Bool)?
+    private var isRestoringUndo = false
+    private var undoGroup: UUID?
+    private var textUndoGroup = UUID()
     @Published private(set) var drawingRevision = 0
     var tool: CanvasTool {
         get { toolSettings.tool }
@@ -18,6 +30,10 @@ final class CanvasPageStore: ObservableObject {
     var inkWidth: CGFloat {
         get { toolSettings.inkWidth }
         set { toolSettings.setWidth(newValue) }
+    }
+    var highlighterOpacity: CGFloat {
+        get { toolSettings.highlighterOpacity }
+        set { toolSettings.setHighlighterOpacity(newValue) }
     }
     var shapeKind: CanvasShapeKind {
         get { toolSettings.shapeKind }
@@ -167,7 +183,7 @@ final class CanvasPageStore: ObservableObject {
             if page.inkDrawingData == snapshot.inkDrawingData,
                page.textBoxes == snapshot.textBoxes, page.shapes == snapshot.shapes,
                page.scratchEraseEnabled == snapshot.scratchEraseEnabled,
-               page.paper == snapshot.paper, page.importedBackground == snapshot.importedBackground { return true }
+               page.paper == snapshot.paper, page.importedBackground == snapshot.importedBackground, page.images == snapshot.images { return true }
         }
     }
 
@@ -201,7 +217,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     var selectionSummary: String {
-        "\(selection.strokeIndices.count) ink · \(selection.textBoxIDs.count) text boxes · \(selection.shapeIDs.count) shapes"
+        "\(selection.strokeIndices.count) ink · \(selection.textBoxIDs.count) text boxes · \(selection.shapeIDs.count) shapes · \(selection.imageIDs.count) images"
     }
 
     var selectedTextFontSize: CGFloat? {
@@ -314,7 +330,7 @@ final class CanvasPageStore: ObservableObject {
         persist()
     }
 
-    func updateDrawing(_ drawing: PKDrawing) {
+    func updateDrawing(_ drawing: PKDrawing, recordUndo: Bool = true) {
         let drawingData = drawing.dataRepresentation()
         guard drawingData != page.inkDrawingData else { return }
         let previousStrokes = self.drawing.strokes
@@ -327,10 +343,59 @@ final class CanvasPageStore: ObservableObject {
         if !prefixMatches { clearScratchUndoHistory() }
         var updated = page
         updated.inkDrawingData = drawingData
+        isRestoringUndo = !recordUndo
         page = updated
+        isRestoringUndo = false
         drawingRevision += 1
         clearSelection()
         schedulePersist()
+    }
+
+    /// Capture a PencilKit value at stroke end; serialize only if Undo is requested.
+    func recordInkUndo(_ before: PKDrawing) { onRecordInkUndo?(page, before) }
+
+    /// Wait for active input and Undo before publishing an asynchronously loaded image.
+    func insertPreparedImages(_ images: [CanvasPageImage], at point: CGPoint? = nil) async throws {
+        while canWrite && (onCanPrepareForDestructiveChange?() == false || permitsPreparedImage?() == false) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try Task.checkCancellation()
+        guard canWrite else { throw CanvasImageAdapter.ImageError.unreadable }
+        guard !images.isEmpty, page.images.count + images.count <= 40,
+              (page.images + images).reduce(0, { $0 + CanvasImageAdapter.pixelCount($1.data) }) <= 16_000_000,
+              page.images.reduce(0, { $0 + $1.data.count }) + images.reduce(0, { $0 + $1.data.count }) <= 80 * 1024 * 1024 else {
+            throw CanvasImageAdapter.ImageError.tooLarge
+        }
+        onFlushCanvasDrawing?()
+        var inserted = images
+        if let point {
+            let bounds = images.reduce(CGRect.null) { $0.union($1.frame) }
+            let origin = CGPoint(x: max(0, min(point.x, CanvasPageGeometry.size.width - bounds.width)),
+                                 y: max(0, min(point.y, CanvasPageGeometry.size.height - bounds.height)))
+            for index in inserted.indices {
+                inserted[index].frame.origin.x += origin.x - bounds.minX
+                inserted[index].frame.origin.y += origin.y - bounds.minY
+            }
+        }
+        for index in inserted.indices { inserted[index].id = UUID() }
+        var updated = page
+        updated.images.append(contentsOf: inserted)
+        page = updated
+        tool = rememberedLassoTool
+        selection = CanvasSelection(imageIDs: Set(inserted.map(\.id)))
+        selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
+        selectionOutline = []
+        persist()
+    }
+
+    func showImageError(_ error: Error) { actionMessage = error.localizedDescription }
+
+    func copySelectedImages() {
+        let images = page.images.filter { selection.imageIDs.contains($0.id) }
+        guard !images.isEmpty else { return }
+        guard let data = try? JSONEncoder().encode(images), let first = images.first else { return }
+        UIPasteboard.general.items = [[CanvasImageAdapter.clipboardType: data, "public.png": first.data]]
+        actionMessage = images.count == 1 ? "Image copied." : "Images copied."
     }
 
     func addTextBox(at point: CGPoint) {
@@ -457,7 +522,9 @@ final class CanvasPageStore: ObservableObject {
         guard canWrite, let index = page.textBoxes.firstIndex(where: { $0.id == id }) else { return }
         var updated = page
         updated.textBoxes[index].text = text
+        undoGroup = textUndoGroup
         page = updated
+        undoGroup = nil
         schedulePersist()
     }
 
@@ -494,6 +561,7 @@ final class CanvasPageStore: ObservableObject {
 
     func finishTextEditing() {
         editingTextBoxID = nil
+        textUndoGroup = UUID()
     }
 
     func updateLassoPreview(_ points: [CGPoint]) {
@@ -528,7 +596,7 @@ final class CanvasPageStore: ObservableObject {
             at: point,
             drawing: drawing,
             textBoxes: page.textBoxes,
-            shapes: page.shapes
+            shapes: page.shapes, images: page.images
         )
         lassoPreview = []
         selectionOutline = []
@@ -541,7 +609,7 @@ final class CanvasPageStore: ObservableObject {
             inside: points,
             drawing: drawing,
             textBoxes: page.textBoxes,
-            shapes: page.shapes
+            shapes: page.shapes, images: page.images
         )
         selectionOutline = selection.isEmpty ? [] : points
         lassoPreview = []
@@ -554,7 +622,7 @@ final class CanvasPageStore: ObservableObject {
             in: CGRect(x: start.x, y: start.y, width: end.x - start.x, height: end.y - start.y),
             drawing: drawing,
             textBoxes: page.textBoxes,
-            shapes: page.shapes
+            shapes: page.shapes, images: page.images
         )
         selectionOutline = selection.isEmpty ? [] : [
             start, CGPoint(x: end.x, y: start.y), end, CGPoint(x: start.x, y: end.y)
@@ -598,12 +666,15 @@ final class CanvasPageStore: ObservableObject {
         guard let snapshot = selectionTransform else { return }
         selectionTransform = nil
         if cancelled {
+            isRestoringUndo = true
             page = snapshot.page
+            isRestoringUndo = false
             selection = snapshot.selection
             selectionOutline = snapshot.outline
             selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
             if snapshot.changed, !selection.strokeIndices.isEmpty { drawingRevision += 1 }
         } else if snapshot.changed {
+            onRecordUndo?(snapshot.page, nil)
             if !selection.strokeIndices.isEmpty { clearScratchUndoHistory() }
             persist()
         }
@@ -656,6 +727,7 @@ final class CanvasPageStore: ObservableObject {
         }
         updated.textBoxes.removeAll { selected.textBoxIDs.contains($0.id) }
         updated.shapes.removeAll { selected.shapeIDs.contains($0.id) }
+        updated.images.removeAll { selected.imageIDs.contains($0.id) }
         if let editingTextBoxID, selected.textBoxIDs.contains(editingTextBoxID) {
             finishTextEditing()
         }
@@ -738,6 +810,20 @@ final class CanvasPageStore: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: save)
     }
 
+    /// Restore content through the normal save path, without recording another edit.
+    func restoreUndoSnapshot(_ snapshot: CanvasPageData) async -> Bool {
+        guard canWrite, onCanPrepareForDestructiveChange?() != false else { return false }
+        onFlushCanvasDrawing?()
+        finishTextEditing()
+        clearSelection()
+        isRestoringUndo = true
+        page = snapshot
+        isRestoringUndo = false
+        drawingRevision += 1
+        clearScratchUndoHistory()
+        return await saveForClose()
+    }
+
     private func persist() {
         pendingPageSave?.cancel()
         pendingPageSave = nil
@@ -814,8 +900,12 @@ final class CanvasPageStore: ObservableObject {
 
     nonisolated private static func validatePage(_ page: CanvasPageData) throws {
         try page.importedBackground?.validate()
-        let objectIDs = page.textBoxes.map(\.id) + page.shapes.map(\.id)
+        let objectIDs = page.textBoxes.map(\.id) + page.shapes.map(\.id) + page.images.map(\.id)
         guard Set(objectIDs).count == objectIDs.count,
+              page.images.count <= 40,
+              page.images.reduce(0, { $0 + CanvasImageAdapter.pixelCount($1.data) }) <= 16_000_000,
+              page.images.reduce(0, { $0 + $1.data.count }) <= 80 * 1024 * 1024,
+              page.images.allSatisfy({ isValidFrame($0.frame) && CanvasImageAdapter.isValid($0.data) }),
               page.textBoxes.allSatisfy({ box in
                   isValidFrame(box.frame) && box.fontSize.isFinite && box.fontSize > 0
               }),

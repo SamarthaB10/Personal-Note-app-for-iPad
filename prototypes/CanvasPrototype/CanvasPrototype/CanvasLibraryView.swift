@@ -33,6 +33,7 @@ struct CanvasLibraryView: View {
                 library
             }
         }
+        .allowsHitTesting(!store.undoHistory.isUndoing)
         .disabled(store.isChangingTrash)
         .sheet(isPresented: $showsTrash) { CanvasTrashView(store: store) }
         .tint(.blue)
@@ -63,6 +64,9 @@ struct CanvasLibraryView: View {
                 selectedFolderID = folder.folderID
                 showsCreateFolder = false
             }
+        }
+        .onChange(of: store.folders.map(\.id)) { _, ids in
+            if case .custom(let id) = selectedFolderID, !ids.contains(id) { selectedFolderID = nil }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { store.saveLifecycleSnapshots() }
@@ -108,6 +112,7 @@ struct CanvasLibraryView: View {
                                      if selectedFolderID == id { selectedFolderID = nil }
                                  })
             Divider()
+            if let error = store.undoHistory.errorMessage { Text(error).font(.footnote).foregroundStyle(.red).padding(8) }
             HStack {
                 Button { showsTrash = true } label: {
                     CanvasLucideIcon(kind: .trash).frame(width: 44, height: 44)
@@ -117,11 +122,21 @@ struct CanvasLibraryView: View {
                 .accessibilityHint("Open deleted items to restore or delete permanently")
                 .help("Trash")
                 Spacer()
+                undoButton
             }
             .padding(.horizontal, 20).padding(.vertical, 8)
         }
         .background(Color(uiColor: .secondarySystemBackground))
         .disabled(isOpening || isMoving || store.isLoading)
+    }
+
+    private var undoButton: some View {
+        Button {
+            Task { await store.undoHistory.undo() }
+        } label: { CanvasToolbarIcon(kind: .undo) }
+        .disabled(store.undoHistory.count == 0 || store.undoHistory.isUndoing || isOpening || isMoving || store.isCreating)
+        .accessibilityLabel("Undo, \(store.undoHistory.count) of 7 steps available")
+        .help("Undo last edit")
     }
 
     private var folderOverview: some View {
@@ -137,6 +152,7 @@ struct CanvasLibraryView: View {
     private var notebookGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
+                HStack {
                 Button { selectedFolderID = nil } label: {
                     HStack(spacing: 8) {
                         CanvasLucideIcon(kind: .arrowLeft)
@@ -144,10 +160,14 @@ struct CanvasLibraryView: View {
                     }.frame(minHeight: 44)
                 }
                 .accessibilityLabel("Return to folder list")
+                Spacer()
+                undoButton
+                }
                 Text(store.folderName(for: selectedFolderID ?? .unfiled))
                     .font(.largeTitle.weight(.bold)).accessibilityAddTraits(.isHeader)
                 Text(visibleNotebooks.isEmpty ? "Create a notebook to start writing." : "\(visibleNotebooks.count) notebooks")
                     .font(.subheadline).foregroundStyle(.secondary)
+                if let error = store.undoHistory.errorMessage { Text(error).font(.footnote).foregroundStyle(.red) }
             }
             .padding(28)
             if let error = store.errorMessage {
