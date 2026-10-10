@@ -40,3 +40,23 @@ The device-panel CLI snapshot failed with `Daemon request timed out`. The tempor
 4. Reopen the notebook. Check moved ink, saved highlights, and remembered opacity. Compare fast writing with Apple Notes and check scratch erase and Undo.
 
 A build and the temporary checks cannot establish physical Pencil quality or smooth movement. Record the user's result separately.
+
+## Dock follow-up
+
+The user passed the highlighter and lasso update, but reported that the dock still moved with friction and shook with both finger and Pencil input. The user also reproduced the shaking in the simulator. The earlier 10-point arithmetic check covered clamping only; it did not verify the gesture's coordinate space or smooth movement.
+
+The follow-up changes `DragGesture` from its default local coordinate space to `.global`. The handle moves with the dock. A fixed screen coordinate space prevents that movement from changing the drag measurement. This is the source-level cause being checked, not a measured latency result. [Apple documents the gesture coordinate-space setting](https://developer.apple.com/documentation/swiftui/draggesture/coordinatespace). The drag remains on the handle and retains the existing collapse, docking, and position saving behavior.
+
+Follow-up commands and results:
+
+- `printf '%s\n' y | bash /tmp/notes-dock-hitl.sh`: exit 1, `OBSERVED_SHAKE=y`. The `y` records the user's repeated completed physical and simulator checks. It is not an automated observation.
+- `python3 /tmp/check-notes-dock-drag.py`: did not capture a completed drag. The accessibility handle rectangle did not match the visible handle. Later screen and geometry-based attempts also did not produce a usable trace. These commands establish no pointer-distance or frame-rate result.
+- Device-panel CLI snapshot: initially failed with `Daemon request timed out`; a later retry returned a snapshot through its private accessibility fallback.
+- `xcodebuild -project /tmp/notes-tool-baseline/CanvasPrototype/CanvasPrototype.xcodeproj -scheme CanvasPrototype -destination 'platform=iOS Simulator,id=2A1BD5CC-3E79-481C-933C-B7063CDBB3B3' -derivedDataPath /tmp/NotesToolReproDerivedData ONLY_ACTIVE_ARCH=YES build`: exit 0. The dock-only temporary app includes trace code outside the repository.
+- The full-source `xcrun swiftc -typecheck` command recorded above: exit 0 after the follow-up.
+- The signed physical `xcodebuild` command recorded above: exit 0 after the follow-up.
+- `xcodebuild -project prototypes/CanvasPrototype/CanvasPrototype.xcodeproj -scheme CanvasPrototype -destination 'platform=iOS Simulator,id=2A1BD5CC-3E79-481C-933C-B7063CDBB3B3' -derivedDataPath /tmp/NotesToolBugDerivedData ONLY_ACTIVE_ARCH=YES build`: exit 0 for the full app.
+- `python3 /private/tmp/ipad-notes-issue4-device.py install` and `python3 /private/tmp/ipad-notes-issue4-device.py launch`: exit 0 after the follow-up.
+- Standards and Spec follow-up reviews: no findings. Both require a new live drag check.
+
+The updated source remains in the existing untracked toolbar file. Other pending work is preserved. No new unit or integration tests, dependencies, note-storage changes, or production deployment were added. The physical check must cover long drags, direction changes, collapse and expansion, edge release, and both finger and Pencil input. Smooth movement is not yet confirmed.
