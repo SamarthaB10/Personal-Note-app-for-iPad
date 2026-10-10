@@ -23,6 +23,10 @@ final class CanvasPageStore: ObservableObject {
         get { toolSettings.shapeKind }
         set { toolSettings.shapeKind = newValue }
     }
+    var textFontSize: CGFloat {
+        get { toolSettings.textFontSize }
+        set { toolSettings.setTextFontSize(newValue) }
+    }
     var rememberedEraserTool: CanvasTool { toolSettings.rememberedEraserTool }
     var rememberedLassoTool: CanvasTool { toolSettings.rememberedLassoTool }
     @Published private(set) var saveStatus = "Loading saved page…"
@@ -40,7 +44,19 @@ final class CanvasPageStore: ObservableObject {
     var textBoxChoiceStartsEditing: Bool { textBoxChoiceIntent == .edit }
 
 
+    var onCanPrepareForDestructiveChange: (() -> Bool)?
+    var onPrepareForExport: (() throws -> CanvasExportPageCapture)?
+
+    /// A surface copies pending ink and current text without invoking the save path.
+    func prepareForExport() throws -> CanvasExportPageCapture {
+        guard !isRetired else { throw CanvasExportSnapshotAdapter.SnapshotError.missingPage }
+        if let onPrepareForExport { return try onPrepareForExport() }
+        guard selectionTransform == nil else { throw CanvasExportSnapshotAdapter.SnapshotError.activeInput }
+        return CanvasExportPageCapture(page: page, ink: .data(page.inkDrawingData))
+    }
+
     var onFlushCanvasDrawing: (() -> Void)?
+    var notebookDirectoryURL: URL? { showsPrototypeBackground ? nil : fileURL?.deletingLastPathComponent() }
     let showsPrototypeBackground: Bool
 
     private let toolSettings = CanvasToolSettings.shared
@@ -54,6 +70,7 @@ final class CanvasPageStore: ObservableObject {
     private var scratchUndoStack: [[RemovedStroke]] = []
     private var pendingPageSave: DispatchWorkItem?
     private var canSave = true
+    private var isRetired = false
     private var textBoxChoiceIntent: TextBoxChoiceIntent?
     private var selectionTransform: SelectionTransform?
 
@@ -150,8 +167,18 @@ final class CanvasPageStore: ObservableObject {
             if page.inkDrawingData == snapshot.inkDrawingData,
                page.textBoxes == snapshot.textBoxes, page.shapes == snapshot.shapes,
                page.scratchEraseEnabled == snapshot.scratchEraseEnabled,
-               page.paper == snapshot.paper { return true }
+               page.paper == snapshot.paper, page.importedBackground == snapshot.importedBackground { return true }
         }
+    }
+
+    /// Retire only after the content is saved and Trash membership is published.
+    func retireForTrash() {
+        isRetired = true
+        pendingPageSave?.cancel()
+        pendingPageSave = nil
+        onFlushCanvasDrawing = nil
+        onPrepareForExport = nil
+        onCanPrepareForDestructiveChange = nil
     }
 
     var drawing: PKDrawing {
@@ -166,7 +193,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     var canWrite: Bool {
-        canSave && fileURL != nil
+        canSave && !isRetired && fileURL != nil
     }
 
     var hasSaveError: Bool {
@@ -178,11 +205,26 @@ final class CanvasPageStore: ObservableObject {
     }
 
     var selectedTextFontSize: CGFloat? {
-        guard selection.textBoxIDs.count == 1, let id = selection.textBoxIDs.first else { return nil }
-        return page.textBoxes.first(where: { $0.id == id })?.fontSize
+        selectedTextBox?.fontSize
+    }
+
+    /// Individual text actions are unavailable for a mixed or multiple-box selection.
+    var selectedTextBox: CanvasTextBox? {
+        guard selection.strokeIndices.isEmpty, selection.shapeIDs.isEmpty,
+              selection.textBoxIDs.count == 1, let id = selection.textBoxIDs.first else { return nil }
+        return page.textBoxes.first(where: { $0.id == id })
+    }
+
+    var formattingTextBox: CanvasTextBox? {
+        guard textBoxCandidates.isEmpty, selectionTransform == nil else { return nil }
+        if let editingTextBoxID {
+            return page.textBoxes.first(where: { $0.id == editingTextBoxID })
+        }
+        return selectedTextBox
     }
 
     func reloadSavedPage() {
+        guard !isRetired else { return }
         cancelTextBoxChoice()
         endSelectionTransform(cancelled: true)
         actionRevision += 1
@@ -292,6 +334,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     func addTextBox(at point: CGPoint) {
+        guard canWrite, point.x.isFinite, point.y.isFinite else { return }
         cancelTextBoxChoice()
         let candidates = CanvasSelectionGeometry.textBoxCandidates(at: point, in: page.textBoxes)
         if candidates.count > 1 {
@@ -313,7 +356,8 @@ final class CanvasPageStore: ObservableObject {
         )
         var updated = page
         updated.textBoxes.append(
-            CanvasTextBox(text: "New text", frame: CGRect(origin: origin, size: CGSize(width: 220, height: 64)), color: color)
+            CanvasTextBox(text: "New text", frame: CGRect(origin: origin, size: CGSize(width: 220, height: 64)),
+                          fontSize: textFontSize, color: color)
         )
         page = updated
         persist()
@@ -325,7 +369,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     func chooseTextBox(_ id: UUID) {
-        guard textBoxCandidates.contains(where: { $0.id == id }),
+        guard canWrite, textBoxCandidates.contains(where: { $0.id == id }),
               page.textBoxes.contains(where: { $0.id == id }),
               let intent = textBoxChoiceIntent else { return }
         cancelTextBoxChoice()
@@ -410,11 +454,42 @@ final class CanvasPageStore: ObservableObject {
     }
 
     func updateTextBox(_ id: UUID, text: String) {
-        guard let index = page.textBoxes.firstIndex(where: { $0.id == id }) else { return }
+        guard canWrite, let index = page.textBoxes.firstIndex(where: { $0.id == id }) else { return }
         var updated = page
         updated.textBoxes[index].text = text
         page = updated
         schedulePersist()
+    }
+
+    /// Format one existing box without changing its edit session or future tool settings.
+    func setTextBoxFontSize(_ id: UUID, size: CGFloat) {
+        guard canWrite, size.isFinite, (8...96).contains(size),
+              formattingTextBox?.id == id,
+              let index = page.textBoxes.firstIndex(where: { $0.id == id }),
+              page.textBoxes[index].fontSize != size else { return }
+        var updated = page
+        updated.textBoxes[index].fontSize = size
+        page = updated
+        schedulePersist()
+    }
+
+    func setTextBoxColor(_ id: UUID, color: CanvasColor) {
+        guard canWrite, formattingTextBox?.id == id,
+              let index = page.textBoxes.firstIndex(where: { $0.id == id }),
+              page.textBoxes[index].color != color else { return }
+        var updated = page
+        updated.textBoxes[index].color = color
+        page = updated
+        schedulePersist()
+    }
+
+    /// Only the explicit Edit action may focus the selected text box.
+    func editSelectedTextBox() {
+        guard canWrite, selectionTransform == nil, textBoxCandidates.isEmpty,
+              let box = selectedTextBox else { return }
+        clearSelection()
+        tool = .textBox
+        editingTextBoxID = box.id
     }
 
     func finishTextEditing() {
@@ -495,7 +570,7 @@ final class CanvasPageStore: ObservableObject {
 
     /// The surface previews the drag locally. This snapshot supports one final transform.
     func beginSelectionTransform() {
-        guard selectionTransform == nil else { return }
+        guard canWrite, selectionTransform == nil else { return }
         onFlushCanvasDrawing?()
         guard let bounds = selectionBounds, !selection.isEmpty else { return }
         selectionTransform = SelectionTransform(
@@ -506,7 +581,7 @@ final class CanvasPageStore: ObservableObject {
 
     /// Translation and scale are cumulative from the initial snapshot; this does not save.
     func updateSelectionTransform(translation: CGPoint, scale: CGFloat) {
-        guard var snapshot = selectionTransform, translation.x.isFinite,
+        guard canWrite, var snapshot = selectionTransform, translation.x.isFinite,
               translation.y.isFinite, scale.isFinite else { return }
         page = CanvasSelectionGeometry.transformed(
             snapshot.page, selection: snapshot.selection, scale: scale,
@@ -562,6 +637,7 @@ final class CanvasPageStore: ObservableObject {
 
     /// Removes complete selected objects while retaining any newly flushed ink.
     func deleteSelection() {
+        guard canWrite else { return }
         let selected = selection
         let inkDataBeforeFlush = page.inkDrawingData
         onFlushCanvasDrawing?()
@@ -632,6 +708,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     private func transformSelection(scale: CGFloat, translation: CGPoint, around anchor: CGPoint = .zero) {
+        guard canWrite else { return }
         onFlushCanvasDrawing?()
         guard !selection.isEmpty else { return }
         page = CanvasSelectionGeometry.transformed(
@@ -668,7 +745,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     private func writeSnapshot(isUserAction: Bool = false, completion: ((Bool) -> Void)? = nil) {
-        guard canSave, let fileURL else {
+        guard canSave, !isRetired, let fileURL else {
             if fileURL == nil { saveStatus = "Local storage is unavailable." }
             if isUserAction { actionMessage = saveStatus }
             completion?(false)
@@ -736,6 +813,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     nonisolated private static func validatePage(_ page: CanvasPageData) throws {
+        try page.importedBackground?.validate()
         let objectIDs = page.textBoxes.map(\.id) + page.shapes.map(\.id)
         guard Set(objectIDs).count == objectIDs.count,
               page.textBoxes.allSatisfy({ box in

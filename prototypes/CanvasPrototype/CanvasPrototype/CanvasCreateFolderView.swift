@@ -1,34 +1,37 @@
 import SwiftUI
 
-struct CanvasCreateNotebookView: View {
+struct CanvasCreateFolderView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: CanvasNotebookStore
-    var folderID: CanvasFolderID = .unfiled
-    let onCreate: (CanvasNotebook) -> Void
-    @State private var title = ""
+    let onCreate: (CanvasFolder) -> Void
+    @State private var name = ""
     @State private var isCreating = false
-    @FocusState private var titleHasFocus: Bool
+    @FocusState private var nameHasFocus: Bool
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Notebook name") {
-                    TextField("Name", text: $title)
-                        .focused($titleHasFocus)
+                Section("Folder name") {
+                    TextField("Name", text: $name)
+                        .focused($nameHasFocus)
                         .submitLabel(.done)
                         .onSubmit { create() }
                         .disabled(isCreating)
-                        .accessibilityLabel("Notebook name")
+                        .accessibilityLabel("Folder name")
+                    if !name.isEmpty, let error = store.folderNameError(name) {
+                        Text(error).foregroundStyle(.red)
+                    }
                 }
                 Section {
-                    Text("The notebook will open with seven blank pages in \(store.folderName(for: folderID)).")
+                    Text("A folder contains notebooks. Folders have one level.")
                         .foregroundStyle(.secondary)
                     if let error = store.errorMessage {
-                        Text(error).foregroundStyle(.red).accessibilityLabel("Create error: \(error)")
+                        Text(error).foregroundStyle(.red)
+                            .accessibilityLabel("Create folder error: \(error)")
                     }
                 }
             }
-            .navigationTitle("Create notebook")
+            .navigationTitle("Create folder")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -36,20 +39,20 @@ struct CanvasCreateNotebookView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isCreating ? "Creating…" : "Create", action: create)
-                        .disabled(isCreating || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !store.canCreateNotebook)
+                        .disabled(isCreating || store.isLoading || store.folderNameError(name) != nil || !store.canCreateNotebook)
                 }
             }
             .interactiveDismissDisabled(isCreating)
         }
         .presentationDetents([.medium, .large])
-        .task { titleHasFocus = true }
+        .task { nameHasFocus = true }
     }
 
     private func create() {
-        guard !isCreating, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !isCreating, store.folderNameError(name) == nil else { return }
         isCreating = true
         Task {
-            if let notebook = await store.createNotebook(title: title, folderID: folderID) { onCreate(notebook) }
+            if let folder = await store.createFolder(name: name) { onCreate(folder) }
             isCreating = false
         }
     }

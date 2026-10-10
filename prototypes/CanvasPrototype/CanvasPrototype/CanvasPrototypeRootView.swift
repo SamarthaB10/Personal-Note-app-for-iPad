@@ -15,11 +15,14 @@ struct CanvasPrototypeRootView: View {
     let zoomPercent: Int
     let scrollRequest: CanvasNotebookScrollRequest?
     let onBack: () -> Void
+    let canDeleteCurrentPage: Bool
+    let onDeleteCurrentPage: () -> Void
     let onPageChange: (Int) -> Void
     let onVisiblePageChange: (Int) -> Void
     let onZoomChange: (Int) -> Void
     let onAddPage: () -> Void
     let onAddPageAfterCurrent: () -> Void
+    let onImportPDF: () -> Void
     let onDefaultPaperChange: (CanvasPaper) -> Void
     let onAppearanceChange: (CanvasAppearance) -> Void
     @State private var settingsControl: CanvasToolControl?
@@ -70,6 +73,13 @@ struct CanvasPrototypeRootView: View {
             .disabled(isNavigating || isAddingPage || isChangingPaper)
             .accessibilityLabel("Home")
             .accessibilityHint("Return to this notebook’s folder")
+            Button(action: onDeleteCurrentPage) {
+                CanvasLucideIcon(kind: .trash).frame(width: 44, height: 44)
+            }
+            .disabled(!canDeleteCurrentPage)
+            .accessibilityLabel("Delete current page")
+            .accessibilityHint("Ask before moving this page to Trash. Keep at least one page.")
+            .help("Delete current page")
             VStack(alignment: .leading, spacing: 2) {
                 Text(notebookTitle).font(.headline).lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
@@ -85,11 +95,19 @@ struct CanvasPrototypeRootView: View {
             }
             .disabled(isNavigating)
             .accessibilityLabel("Choose page, current page \(pageNumber) of \(pageCount)")
-            Button("Add Page", action: onAddPageAfterCurrent)
-                .frame(minWidth: 44, minHeight: 44)
+            Menu {
+                Button("Add Page", action: onAddPageAfterCurrent)
+                Button("Import PDF", action: onImportPDF)
+            } label: {
+                CanvasLucideIcon(kind: .plus).frame(width: 44, height: 44)
+            }
+                .accessibilityLabel("Add page or import PDF")
                 .disabled(isNavigating || isAddingPage || isChangingPaper
                           || pageCount >= CanvasNotebook.maximumPageCount)
                 .accessibilityHint("Add a page after the current page")
+            Button("Import from Files", action: onImportPDF)
+                .frame(minHeight: 44)
+                .disabled(isNavigating || isAddingPage || isChangingPaper || pageCount >= CanvasNotebook.maximumPageCount)
             Text("\(zoomPercent)%")
                 .font(.subheadline).monospacedDigit().frame(minWidth: 44)
                 .accessibilityLabel("Zoom \(zoomPercent) percent")

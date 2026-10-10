@@ -130,6 +130,14 @@ These explicit user changes replace the earlier page-limit and ink-enclosure rul
 
 The issue 4 ticket still states no fixed page limit. The later explicit instruction sets a maximum of 300 pages for each notebook. This document records the current requirement without changing the ticket.
 
+## Accepted library UI changes on 10 October 2026
+
+- Put a Trash icon at the bottom of the folder sidebar. Keep its accessible name and access to recovery.
+- Put the current-page trash icon beside Home. A tap opens Delete current page and asks Are you sure? Delete moves that page to Trash. Keep the final page.
+- Put custom folder Delete in the sidebar folder's press-and-hold menu. Confirm before moving the folder and its notebooks to Trash. Remove Delete folder from the notebook grid header.
+- Offer a named color palette for custom folders. Save the color locally and preserve it during folder Trash restore. Old folders without a color use blue. Keep saved writing colors unchanged.
+- Keep notebook Delete and Move in the same press-and-hold menu on the notebook cover.
+
 ## Required behavior checks for a future build
 
 These are manual scenarios, not automated tests. No unit or integration tests are requested.

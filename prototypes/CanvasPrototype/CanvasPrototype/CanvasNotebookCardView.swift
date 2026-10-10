@@ -30,6 +30,7 @@ struct CanvasNotebookCardView: View {
             Text(notebook.title).font(.headline).lineLimit(2).multilineTextAlignment(.center)
                 .frame(minHeight: 44, alignment: .top)
             Text("\(notebook.pageIDs.count) pages").font(.caption).foregroundStyle(.secondary)
+                .frame(minHeight: 32, alignment: .top)
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())

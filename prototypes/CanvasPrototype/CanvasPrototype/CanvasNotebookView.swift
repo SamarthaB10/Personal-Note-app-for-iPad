@@ -1,4 +1,5 @@
 import SwiftUI
+import PencilKit
 
 /// The library keeps stable page stores. Scrolling changes only the active controls.
 struct CanvasNotebookView: View {
@@ -7,9 +8,13 @@ struct CanvasNotebookView: View {
     @ObservedObject var library: CanvasNotebookStore
     let onClose: () -> Void
     @State private var pageIndex = 0
+    @State private var importRequest: CanvasNotebookImportRequest?
+    @State private var importMessage: String?
     @State private var isNavigating = false
     @State private var isAddingPage = false
     @State private var isChangingPaper = false
+    @State private var isDeletingPage = false
+    @State private var pageToDelete: CanvasPageDeletionRequest?
     @State private var navigationError: String?
     @State private var scrollRequest: CanvasNotebookScrollRequest?
     @State private var zoomPercent = 100
@@ -32,6 +37,16 @@ struct CanvasNotebookView: View {
     var body: some View {
         let entries = orderedPages
         VStack(spacing: 0) {
+            HStack {
+                Text(library.folderName(for: currentNotebook.folderID)).foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                NotebookExportToFilesControl(captureSnapshot: captureExportSnapshot)
+                    .disabled(isNavigating || importRequest != nil)
+            }
+            .padding(.horizontal, 12)
+            .background(Color(uiColor: .secondarySystemBackground))
+            if let importMessage { Text(importMessage).font(.callout).padding(12) }
             if let navigationError {
                 Text(navigationError).font(.callout).foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -50,18 +65,36 @@ struct CanvasNotebookView: View {
                     isChangingPaper: isChangingPaper,
                     appearance: appearance, zoomPercent: zoomPercent,
                     scrollRequest: scrollRequest,
-                    onBack: close, onPageChange: requestPage,
+                    onBack: close, canDeleteCurrentPage: canDeleteCurrentPage,
+                    onDeleteCurrentPage: requestPageDeletion, onPageChange: requestPage,
                     onVisiblePageChange: setVisiblePage,
                     onZoomChange: { zoomPercent = $0 }, onAddPage: addPage,
                     onAddPageAfterCurrent: addPageAfterCurrent,
+                    onImportPDF: startPDFImport,
                     onDefaultPaperChange: setDefaultPaper,
                     onAppearanceChange: { appearanceValue = $0.rawValue }
                 )
-                .allowsHitTesting(!isNavigating)
+                .allowsHitTesting(!isNavigating && !isDeletingPage && !library.isChangingTrash)
             } else {
                 Text("The notebook pages are unavailable. Saved files are preserved.")
                     .padding()
             }
+        }
+        .sheet(item: $importRequest) { request in
+            CanvasImportFilesView(destination: .insertPDF(notebookID: notebook.id, afterPageID: request.pageID),
+                                  adapter: library.importAdapter, store: library) { publication in
+                importMessage = publication.message
+                importRequest = nil
+            }
+        }
+        .disabled(library.isChangingTrash)
+        .alert("Delete current page", isPresented: Binding(
+            get: { pageToDelete != nil }, set: { if !$0 { pageToDelete = nil } }
+        ), presenting: pageToDelete) { request in
+            Button("Delete", role: .destructive) { deletePage(request) }
+            Button("Cancel", role: .cancel) { pageToDelete = nil }
+        } message: { request in
+            Text("Are you sure? Page \(request.pageNumber) will move to Trash. You can restore it later.")
         }
         .preferredColorScheme(appearance.colorScheme)
         .onChange(of: appearance, initial: true) { _, value in
@@ -76,8 +109,91 @@ struct CanvasNotebookView: View {
         }
     }
 
+    /// Freeze page order, appearance, text, and live ink before asynchronous source reads.
+    @MainActor
+    private func captureExportSnapshot(_ scope: NotebookExportScope) async throws -> ExportNotebookSnapshot {
+        let snapshotNotebook = currentNotebook
+        let entries = orderedPages
+        guard !isNavigating, entries.indices.contains(pageIndex) else {
+            throw CanvasExportSnapshotAdapter.SnapshotError.missingPage
+        }
+        let currentID = entries[pageIndex].id
+        let ids = scope == .currentPage ? [currentID] : snapshotNotebook.pageIDs
+        let dark = appearance == .dark
+        var captured: [UUID: CanvasExportPageCapture] = [:]
+        for id in ids {
+            guard let store = entries.first(where: { $0.id == id })?.store else {
+                throw CanvasExportSnapshotAdapter.SnapshotError.missingPage
+            }
+            captured[id] = try store.prepareForExport()
+        }
+        let sourceCache = CanvasExportSourceCache()
+        var backgrounds: [UUID: ExportBackground] = [:]
+        for id in ids {
+            try Task.checkCancellation()
+            guard let value = captured[id] else { throw CanvasExportSnapshotAdapter.SnapshotError.missingPage }
+            if let background = try await library.importedBackgroundBytes(
+                notebookID: snapshotNotebook.id, page: value.page, sourceCache: sourceCache) {
+                if background.isPDF {
+                    backgrounds[id] = .pdf(data: background.displayBytes, pageNumber: 1,
+                        box: .mediaBox, frame: CGRect(origin: .zero, size: CanvasPageGeometry.size))
+                } else {
+                    guard let bytes = background.boundedImageBytes else { throw ExportPDFError.invalidBackground }
+                    backgrounds[id] = .image(data: bytes, frame: background.frame)
+                }
+            } else {
+                backgrounds[id] = CanvasExportSnapshotAdapter.paperBackground(value.page, dark: dark)
+            }
+        }
+        try Task.checkCancellation()
+        let live = captured.compactMapValues { value -> PKDrawing? in
+            if case let .drawing(drawing) = value.ink { return drawing }
+            return nil
+        }
+        return try CanvasExportSnapshotAdapter.capture(notebook: snapshotNotebook,
+            currentPageID: currentID, scope: scope, pages: captured.mapValues(\.page), liveDrawings: live) { id, _ in
+                guard let background = backgrounds[id] else { throw ExportPDFError.invalidBackground }
+                return background
+            }
+    }
+
+    private func startPDFImport() {
+        let entries = orderedPages
+        guard entries.indices.contains(pageIndex), !isNavigating, !isAddingPage,
+              currentNotebook.pageIDs.count < CanvasNotebook.maximumPageCount else { return }
+        // Capture the stable page ID before the Files sheet opens.
+        importRequest = CanvasNotebookImportRequest(pageID: entries[pageIndex].id)
+    }
+
+    private var canDeleteCurrentPage: Bool {
+        currentNotebook.pageIDs.count > 1 && !isDeletingPage && !isNavigating
+            && !isAddingPage && !isChangingPaper && !library.isChangingTrash && importRequest == nil
+    }
+
+    private func requestPageDeletion() {
+        let entries = orderedPages
+        guard canDeleteCurrentPage, entries.indices.contains(pageIndex) else { return }
+        // Keep the page identity fixed while the confirmation is open.
+        pageToDelete = CanvasPageDeletionRequest(pageID: entries[pageIndex].id, pageNumber: pageIndex + 1)
+    }
+
+    private func deletePage(_ request: CanvasPageDeletionRequest) {
+        pageToDelete = nil
+        guard canDeleteCurrentPage else { return }
+        isDeletingPage = true
+        Task {
+            if await library.movePageToTrash(request.pageID, in: notebook.id) {
+                pageIndex = min(pageIndex, max(0, currentNotebook.pageIDs.count - 1))
+                navigationError = nil
+            } else {
+                navigationError = library.errorMessage
+            }
+            isDeletingPage = false
+        }
+    }
+
     private func close() {
-        guard !isNavigating, !isAddingPage, !isChangingPaper else { return }
+        guard !isNavigating, !isAddingPage, !isChangingPaper, !isDeletingPage else { return }
         isNavigating = true
         orderedPages.forEach { $0.store.finishTextEditing() }
         Task {
@@ -150,4 +266,14 @@ struct CanvasNotebookView: View {
             isChangingPaper = false
         }
     }
+}
+
+private struct CanvasNotebookImportRequest: Identifiable {
+    let id = UUID()
+    let pageID: UUID
+}
+
+private struct CanvasPageDeletionRequest {
+    let pageID: UUID
+    let pageNumber: Int
 }

@@ -29,6 +29,9 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     private let pageView = UIView()
     private let paperView = CanvasPaperBackgroundView()
     private let backgroundView = UIImageView()
+    private let backgroundStatus = UILabel()
+    private var importedBackground: CanvasImportedBackground?
+    private var backgroundTask: Task<Void, Never>?
     private let canvasView = PKCanvasView()
     private let itemView = CanvasItemOverlayView()
     private let selectionInkView = UIImageView()
@@ -114,6 +117,14 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         backgroundView.image = store.showsPrototypeBackground ? Self.loadPDFBackground() : nil
         backgroundView.isUserInteractionEnabled = false
         pageView.addSubview(backgroundView)
+        backgroundStatus.frame = CGRect(x: 16, y: 16, width: logicalSize.width - 32, height: 72)
+        backgroundStatus.numberOfLines = 3
+        backgroundStatus.font = .preferredFont(forTextStyle: .body)
+        backgroundStatus.textColor = .black
+        backgroundStatus.backgroundColor = UIColor.white.withAlphaComponent(0.95)
+        backgroundStatus.isHidden = true
+        backgroundStatus.isUserInteractionEnabled = false
+        pageView.addSubview(backgroundStatus)
 
         canvasView.frame = pageView.bounds
         canvasView.delegate = self
@@ -171,6 +182,19 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         scratchGesture.onScratchCancelled = { [weak self] in self?.cancelScratchErase() }
         pageView.addGestureRecognizer(scratchGesture)
 
+        store.onCanPrepareForDestructiveChange = { [weak self] in
+            guard let self else { return true }
+            let drawingState = self.canvasView.drawingGestureRecognizer.state
+            return !self.isInteractingWithPage && !self.scratchIsRecognized && self.selectionGesture == nil
+                && drawingState != .began && drawingState != .changed
+        }
+        store.onPrepareForExport = { [weak self] in
+            guard let self, !self.isPreparedForRemoval else {
+                throw CanvasExportSnapshotAdapter.SnapshotError.missingPage
+            }
+            return try self.prepareForExport()
+        }
+
         store.onFlushCanvasDrawing = { [weak self] in
             guard let self, !self.isPreparedForRemoval else { return }
             self.ownsFlushCallback = true
@@ -211,7 +235,13 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         commitPendingDrawing(allowDuringPencil: true)
         ownsFlushCallback = false
         store.onFlushCanvasDrawing?()
-        if ownsFlushCallback { store.onFlushCanvasDrawing = nil }
+        if ownsFlushCallback {
+            store.onFlushCanvasDrawing = nil
+            store.onPrepareForExport = nil
+            store.onCanPrepareForDestructiveChange = nil
+        }
+        backgroundTask?.cancel()
+        backgroundTask = nil
         isPreparedForRemoval = true
         canvasView.delegate = nil
         fingerGesture.isEnabled = false
@@ -219,6 +249,25 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         scratchGesture.isEnabled = false
         pendingDrawingSave?.cancel()
         pendingDrawingSave = nil
+    }
+
+    /// Do not commit a movement preview or serialize ink while taking this value copy.
+    private func prepareForExport() throws -> CanvasExportPageCapture {
+        let drawingState = canvasView.drawingGestureRecognizer.state
+        guard !isUsingPencil, !scratchIsRecognized,
+              activePathInput == nil, selectionGesture == nil,
+              drawingState != .began, drawingState != .changed else {
+            throw CanvasExportSnapshotAdapter.SnapshotError.activeInput
+        }
+        var page = store.page
+        if let editor, let editorBoxID,
+           let index = page.textBoxes.firstIndex(where: { $0.id == editorBoxID }) {
+            page.textBoxes[index].text = editor.text ?? ""
+        }
+        // A store change may still be waiting for the next UIKit update.
+        let ink: ExportInk = hasPendingInkChanges || lastAppliedDrawingRevision == store.drawingRevision
+            ? .drawing(canvasView.drawing) : .data(page.inkDrawingData)
+        return CanvasExportPageCapture(page: page, ink: ink)
     }
 
     /// Finger paths use page tools. The notebook keeps two-finger pan and pinch available.
@@ -234,13 +283,46 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     }
 
     private func updatePaperAppearance() {
-        let hasPDF = backgroundView.image != nil
+        let hasPDF = store.page.importedBackground != nil || backgroundView.image != nil
         pageView.backgroundColor = hasPDF ? .white : .systemBackground
         paperView.paper = store.page.paper
         paperView.isHidden = hasPDF
         paperView.setNeedsDisplay()
         pageView.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
         editor?.backgroundColor = hasPDF ? .white : .systemBackground
+    }
+
+    /// A utility queue renders fixed content. It never reads or writes the live drawing.
+    private func updateImportedBackground(_ background: CanvasImportedBackground?) {
+        guard background != importedBackground else { return }
+        importedBackground = background
+        backgroundTask?.cancel()
+        guard let background else {
+            backgroundView.image = store.showsPrototypeBackground ? Self.loadPDFBackground() : nil
+            backgroundStatus.isHidden = true
+            return
+        }
+        backgroundView.image = nil
+        backgroundStatus.text = "Loading source background…"
+        backgroundStatus.isHidden = false
+        guard let directory = store.notebookDirectoryURL else {
+            backgroundStatus.text = "The source background is unavailable. Saved content is preserved."
+            return
+        }
+        backgroundTask = Task { [weak self] in
+            do {
+                let image = try await CanvasImportedRenderCache.shared.image(background, notebookDirectory: directory)
+                guard let self, !Task.isCancelled, !self.isPreparedForRemoval,
+                      self.importedBackground == background else { return }
+                self.backgroundView.image = image
+                self.backgroundStatus.isHidden = true
+                self.updatePaperAppearance()
+            } catch {
+                guard let self, !Task.isCancelled, !self.isPreparedForRemoval else { return }
+                self.backgroundStatus.text = "The source background could not be read. Close and reopen this notebook to retry. Saved content is preserved."
+                self.backgroundStatus.isHidden = false
+            }
+        }
     }
 
     override func layoutSubviews() {
@@ -257,6 +339,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
 
     func apply(_ page: CanvasPageData, tool: CanvasTool, color: CanvasColor, width: CGFloat) {
         guard !isPreparedForRemoval else { return }
+        updateImportedBackground(page.importedBackground)
         updatePaperAppearance()
         if selectionGesture != nil,
            configuredTool != tool || itemView.selection != store.selection {
@@ -763,7 +846,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         if currentEditor.frame != box.frame { currentEditor.frame = box.frame }
         let font = UIFont.systemFont(ofSize: box.fontSize)
         if currentEditor.font != font { currentEditor.font = font }
-        currentEditor.backgroundColor = backgroundView.image != nil ? .white : .systemBackground
+        currentEditor.backgroundColor = store.page.importedBackground != nil || backgroundView.image != nil ? .white : .systemBackground
         let color = box.color.uiColor
         if currentEditor.textColor != color { currentEditor.textColor = color }
         if !currentEditor.isFirstResponder, currentEditor.text != box.text {
