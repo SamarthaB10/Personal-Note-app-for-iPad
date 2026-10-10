@@ -10,6 +10,22 @@ struct CanvasSelectionActionsView: View {
             Text(store.selectionSummary).font(.footnote).foregroundStyle(.secondary)
             Text("Drag inside the selection to move it. Drag the round handle to resize it.")
                 .font(.footnote).foregroundStyle(.secondary)
+            if let box = store.selectedTextBox {
+                DisclosureGroup("Text format") {
+                    ScrollView(.vertical) {
+                        CanvasTextFormatView(store: store, boxID: box.id)
+                    }
+                    .frame(maxHeight: 240)
+                }
+                Button("Edit text box") {
+                    store.editSelectedTextBox()
+                    onDismiss()
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .disabled(!store.canWrite)
+                .accessibilityHint("Open the keyboard for this text box only")
+                Divider()
+            }
             Text("Move").font(.subheadline.weight(.semibold))
             HStack(spacing: 8) {
                 moveButton("Left", x: -12, y: 0)
@@ -27,12 +43,13 @@ struct CanvasSelectionActionsView: View {
                     .accessibilityLabel("Increase selection size")
             }
             .frame(minHeight: 44)
-            Button("Delete selection", role: .destructive) {
+            .disabled(!store.canWrite)
+            Button(store.selectedTextBox == nil ? "Delete selection" : "Delete text box", role: .destructive) {
                 store.deleteSelection()
                 onDismiss()
             }
             .frame(maxWidth: .infinity, minHeight: 44)
-            .disabled(store.selection.isEmpty)
+            .disabled(!store.canWrite || store.selection.isEmpty)
             .accessibilityHint("Delete selected ink, text boxes, and shapes. Keep the PDF content unchanged")
             Button("Clear selection") {
                 store.clearSelection()
@@ -42,13 +59,14 @@ struct CanvasSelectionActionsView: View {
         }
         .buttonStyle(.bordered)
         .padding(20)
-        .frame(width: 280)
+        .frame(width: 320)
         .presentationCompactAdaptation(.popover)
     }
 
     private func moveButton(_ title: String, x: CGFloat, y: CGFloat) -> some View {
         Button(title) { store.moveSelection(by: CGPoint(x: x, y: y)) }
             .frame(maxWidth: .infinity, minHeight: 44)
+            .disabled(!store.canWrite)
             .accessibilityLabel("Move selection \(title.lowercased())")
     }
 

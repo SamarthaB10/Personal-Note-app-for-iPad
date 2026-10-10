@@ -63,9 +63,21 @@ struct CanvasToolSettingsView: View {
                         .frame(minHeight: 44)
                         .accessibilityLabel("\(control.title) manual width")
                 }
+                if control == .textBox {
+                    if let box = store.formattingTextBox {
+                        Text("Existing text box").font(.subheadline.weight(.semibold))
+                        CanvasTextFormatView(store: store, boxID: box.id)
+                        Divider()
+                    }
+                    Text("New text boxes").font(.subheadline.weight(.semibold))
+                    CanvasTextFontSizeControl(size: Binding(
+                        get: { store.textFontSize },
+                        set: { store.textFontSize = $0 }
+                    ))
+                }
                 colorChoices
                 if control == .textBox {
-                    Text("Select Text box, then tap a box to open the keyboard.")
+                    Text("New box settings do not change existing text. Select Text box, then tap a box to open the keyboard.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
@@ -104,39 +116,10 @@ struct CanvasToolSettingsView: View {
     }
 
     private var colorChoices: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Color: \(store.color.title)").font(.subheadline)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                ForEach(CanvasColor.allCases, id: \.self) { value in
-                    Button {
-                        activateControl()
-                        store.color = value
-                    } label: {
-                        VStack(spacing: 4) {
-                            Circle().fill(Color(uiColor: value.uiColor)).frame(width: 28, height: 28)
-                                .overlay { Circle().strokeBorder(Color.primary.opacity(0.35)) }
-                                .overlay(alignment: .topTrailing) {
-                                    if store.color == value {
-                                        Text("✓").font(.caption.bold()).foregroundStyle(Color.primary)
-                                            .frame(width: 18, height: 18)
-                                            .background(Color(uiColor: .systemBackground), in: Circle())
-                                    }
-                                }
-                            Text(value.title).font(.caption2).foregroundStyle(Color.primary)
-                                .lineLimit(2).multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 64)
-                        .background(store.color == value ? Color.accentColor.opacity(0.12) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(value.title)
-                    .accessibilityValue(store.color == value ? "Selected" : "")
-                    .accessibilityAddTraits(store.color == value ? .isSelected : [])
-                }
-            }
-        }
+        CanvasColorChoicesView(color: Binding(
+            get: { store.color },
+            set: { activateControl(); store.color = $0 }
+        ))
     }
 
 }
