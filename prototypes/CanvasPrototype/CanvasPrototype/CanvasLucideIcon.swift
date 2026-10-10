@@ -19,6 +19,7 @@ import SwiftUI
 struct CanvasLucideIcon: View {
     enum Kind {
         case pen, marker, eraser, text, rectangle, lasso, box, undo, more, settings, folder, notebook, plus, arrowLeft, home, trash
+        case files, fileInput, fileOutput, check, sun
     }
 
     let kind: Kind
@@ -36,6 +37,67 @@ struct CanvasLucideIcon: View {
     private var iconPath: Path {
         var path = Path()
         switch kind {
+        case .sun:
+            path.addEllipse(in: CGRect(x: 8, y: 8, width: 8, height: 8))
+            for (start, end) in [
+                (CGPoint(x: 12, y: 2), CGPoint(x: 12, y: 4)),
+                (CGPoint(x: 12, y: 20), CGPoint(x: 12, y: 22)),
+                (CGPoint(x: 4.93, y: 4.93), CGPoint(x: 6.34, y: 6.34)),
+                (CGPoint(x: 17.66, y: 17.66), CGPoint(x: 19.07, y: 19.07)),
+                (CGPoint(x: 2, y: 12), CGPoint(x: 4, y: 12)),
+                (CGPoint(x: 20, y: 12), CGPoint(x: 22, y: 12)),
+                (CGPoint(x: 6.34, y: 17.66), CGPoint(x: 4.93, y: 19.07)),
+                (CGPoint(x: 19.07, y: 4.93), CGPoint(x: 17.66, y: 6.34))
+            ] {
+                path.move(to: start)
+                path.addLine(to: end)
+            }
+        case .check:
+            path.move(to: CGPoint(x: 20, y: 6))
+            path.addLine(to: CGPoint(x: 9, y: 17))
+            path.addLine(to: CGPoint(x: 4, y: 12))
+        case .files:
+            path.move(to: CGPoint(x: 20, y: 7))
+            path.addLine(to: CGPoint(x: 17, y: 7))
+            path.addQuadCurve(to: CGPoint(x: 15, y: 5), control: CGPoint(x: 15, y: 7))
+            path.addLine(to: CGPoint(x: 15, y: 2))
+            path.move(to: CGPoint(x: 9, y: 18))
+            path.addQuadCurve(to: CGPoint(x: 7, y: 16), control: CGPoint(x: 7, y: 18))
+            path.addLine(to: CGPoint(x: 7, y: 4))
+            path.addQuadCurve(to: CGPoint(x: 9, y: 2), control: CGPoint(x: 7, y: 2))
+            path.addLine(to: CGPoint(x: 16, y: 2))
+            path.addLine(to: CGPoint(x: 20, y: 6))
+            path.addLine(to: CGPoint(x: 20, y: 16))
+            path.addQuadCurve(to: CGPoint(x: 18, y: 18), control: CGPoint(x: 20, y: 18))
+            path.closeSubpath()
+            path.move(to: CGPoint(x: 3, y: 7.6))
+            path.addLine(to: CGPoint(x: 3, y: 20.4))
+            path.addQuadCurve(to: CGPoint(x: 4.6, y: 22), control: CGPoint(x: 3, y: 22))
+            path.addLine(to: CGPoint(x: 14.4, y: 22))
+        case .fileInput, .fileOutput:
+            path.move(to: CGPoint(x: 4, y: 22))
+            path.addLine(to: CGPoint(x: 18, y: 22))
+            path.addQuadCurve(to: CGPoint(x: 20, y: 20), control: CGPoint(x: 20, y: 22))
+            path.addLine(to: CGPoint(x: 20, y: 7))
+            path.addLine(to: CGPoint(x: 15, y: 2))
+            path.addLine(to: CGPoint(x: 6, y: 2))
+            path.addQuadCurve(to: CGPoint(x: 4, y: 4), control: CGPoint(x: 4, y: 2))
+            path.addLine(to: CGPoint(x: 4, y: 8))
+            path.move(to: CGPoint(x: 14, y: 2))
+            path.addLine(to: CGPoint(x: 14, y: 6))
+            path.addQuadCurve(to: CGPoint(x: 16, y: 8), control: CGPoint(x: 14, y: 8))
+            path.addLine(to: CGPoint(x: 20, y: 8))
+            path.move(to: CGPoint(x: 2, y: 15))
+            path.addLine(to: CGPoint(x: 12, y: 15))
+            if kind == .fileInput {
+                path.move(to: CGPoint(x: 9, y: 18))
+                path.addLine(to: CGPoint(x: 12, y: 15))
+                path.addLine(to: CGPoint(x: 9, y: 12))
+            } else {
+                path.move(to: CGPoint(x: 5, y: 18))
+                path.addLine(to: CGPoint(x: 2, y: 15))
+                path.addLine(to: CGPoint(x: 5, y: 12))
+            }
         case .trash:
             path.move(to: CGPoint(x: 3, y: 6))
             path.addLine(to: CGPoint(x: 21, y: 6))
@@ -266,5 +328,16 @@ struct CanvasLucideIcon: View {
             path.addLine(to: CGPoint(x: 3, y: 12))
         }
         return path
+    }
+}
+
+/// A compact icon keeps a full 44-point tap area in the notebook toolbar.
+struct CanvasToolbarIcon: View {
+    let kind: CanvasLucideIcon.Kind
+
+    var body: some View {
+        CanvasLucideIcon(kind: kind)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 }
