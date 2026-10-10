@@ -26,6 +26,10 @@ struct CanvasSelectionActionsView: View {
                 .accessibilityHint("Open the keyboard for this text box only")
                 Divider()
             }
+            if !store.selection.imageIDs.isEmpty {
+                Button("Copy images") { store.copySelectedImages() }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
             Text("Move").font(.subheadline.weight(.semibold))
             HStack(spacing: 8) {
                 moveButton("Left", x: -12, y: 0)
@@ -50,7 +54,7 @@ struct CanvasSelectionActionsView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 44)
             .disabled(!store.canWrite || store.selection.isEmpty)
-            .accessibilityHint("Delete selected ink, text boxes, and shapes. Keep the PDF content unchanged")
+            .accessibilityHint("Delete selected ink, text boxes, shapes, and images. Keep the PDF content unchanged")
             Button("Clear selection") {
                 store.clearSelection()
                 onDismiss()

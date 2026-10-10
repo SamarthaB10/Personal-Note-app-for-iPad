@@ -137,3 +137,19 @@ The intended commit includes the related rendering viewport support needed by th
 Required user check: pinch on ink and blank paper. The complete page, ink, and typed text must scale together, and the percentage must change with them. Try repeated inward and outward pinches, then write and use lasso. Check scratch-and-hold during fast writing separately; the random scratch report is still open.
 
 Cleanup: the temporary app workspace was moved from `/tmp/notes-tool-baseline` to `/tmp/notes-debug/ink-zoom-probe-workspace`. The full iPad app entry point was not changed. No debug logging was added to repository source.
+
+## User acceptance and PR preparation
+
+The user reported "ok everything works" after the independent ink zoom correction. This is the user's acceptance of the current iPad behavior; it is separate from the programmatic checks recorded above.
+
+The user then requested a PR and explicitly selected the full tested app, including image import and Undo. The PR therefore includes the floating dock, editable image insertion from Photos or paste, image selection and PDF export, and the seven-step edit Undo history. These files were already present in the accepted iPad build. The PR checkout copies those source files without changing their behavior. The original checkout and its pending files are preserved.
+
+The user explicitly requested no PR monitoring. No watch or babysitter will be started.
+
+The full-app PR review found that a permanently deleted Trash item left an unavailable restore at the top of Undo. All later Undo attempts retried it. The PR clears Undo history when permanent deletion is committed and shows "Undo history cleared after permanent deletion." Temporary Undo failures still retain their action for retry. This small review correction is in the PR checkout; the original tested checkout is preserved.
+
+`swiftc -parse-as-library /tmp/notes-undo-repro.swift -o /tmp/notes-undo-repro` followed by `/tmp/notes-undo-repro` reproduced the blocked history before the correction. After correction, the temporary command confirmed cleared unavailable history with its notice and retention of temporary failures. No repository tests were added.
+
+The user requested no PR snapshots or images. No screenshots are included in the PR and no image files are committed.
+
+PR checkout checks: `git diff --check` and `git diff --cached --check` passed. The first source type check was interrupted because the reviewed Undo source changed while it ran; a fresh check was started after the correction. The final checkout uses `xcodebuild -quiet -project prototypes/CanvasPrototype/CanvasPrototype.xcodeproj -scheme CanvasPrototype -destination 'generic/platform=iOS' -derivedDataPath /tmp/NotesPRBuild CODE_SIGNING_ALLOWED=NO build`. These final commands were still running when the user asked for immediate PR publication. The earlier signed iPad build passed, and the source matches that build except for the two small permanent-deletion Undo changes.

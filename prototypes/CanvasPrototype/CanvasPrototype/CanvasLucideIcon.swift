@@ -19,7 +19,7 @@ import SwiftUI
 struct CanvasLucideIcon: View {
     enum Kind {
         case pen, marker, eraser, text, rectangle, lasso, box, undo, more, settings, folder, notebook, plus, arrowLeft, home, trash
-        case files, fileInput, fileOutput, check, sun
+        case files, fileInput, fileOutput, check, sun, chevronDown, grip, imagePlus
     }
 
     let kind: Kind
@@ -37,6 +37,32 @@ struct CanvasLucideIcon: View {
     private var iconPath: Path {
         var path = Path()
         switch kind {
+        case .chevronDown:
+            path.move(to: CGPoint(x: 6, y: 9))
+            path.addLine(to: CGPoint(x: 12, y: 15))
+            path.addLine(to: CGPoint(x: 18, y: 9))
+        case .grip:
+            for x in [5, 12, 19] {
+                for y in [5, 12, 19] { path.addEllipse(in: CGRect(x: x - 1, y: y - 1, width: 2, height: 2)) }
+            }
+        case .imagePlus:
+            path.move(to: CGPoint(x: 16, y: 5))
+            path.addLine(to: CGPoint(x: 22, y: 5))
+            path.move(to: CGPoint(x: 19, y: 2))
+            path.addLine(to: CGPoint(x: 19, y: 8))
+            path.move(to: CGPoint(x: 21, y: 11.5))
+            path.addLine(to: CGPoint(x: 21, y: 19))
+            path.addQuadCurve(to: CGPoint(x: 19, y: 21), control: CGPoint(x: 21, y: 21))
+            path.addLine(to: CGPoint(x: 5, y: 21))
+            path.addQuadCurve(to: CGPoint(x: 3, y: 19), control: CGPoint(x: 3, y: 21))
+            path.addLine(to: CGPoint(x: 3, y: 5))
+            path.addQuadCurve(to: CGPoint(x: 5, y: 3), control: CGPoint(x: 3, y: 3))
+            path.addLine(to: CGPoint(x: 12.5, y: 3))
+            path.move(to: CGPoint(x: 21, y: 15))
+            path.addLine(to: CGPoint(x: 17.914, y: 11.914))
+            path.addQuadCurve(to: CGPoint(x: 15.086, y: 11.914), control: CGPoint(x: 16.5, y: 10.5))
+            path.addLine(to: CGPoint(x: 6, y: 21))
+            path.addEllipse(in: CGRect(x: 7, y: 7, width: 4, height: 4))
         case .sun:
             path.addEllipse(in: CGRect(x: 8, y: 8, width: 8, height: 8))
             for (start, end) in [

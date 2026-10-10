@@ -5,6 +5,7 @@ import UIKit
 
 @MainActor
 final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
+    let undoHistory = CanvasUndoHistory()
     @Published private(set) var notebooks: [CanvasNotebook] = []
     @Published private(set) var trash: [CanvasTrashRecord] = []
     @Published private(set) var isChangingTrash = false
@@ -27,11 +28,13 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
     private var hasPublishedIndex = false
     private var indexMutationIsActive = false
     private var indexMutationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var undoObservation: AnyCancellable?
     private var pageStores: [UUID: [UUID: CanvasPageStore]] = [:]
 
     init() {
         directoryURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?.appendingPathComponent("PersonalNotes", isDirectory: true)
+        undoObservation = undoHistory.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         Task { await loadLibrary() }
     }
 
@@ -132,6 +135,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
             libraryRevision = library.revision
             hasPublishedIndex = true
             notebooks.append(notebook)
+            undoHistory.record { [weak self] in await self?.moveNotebookToTrash(notebook.id) ?? false }
             errorMessage = nil
             return notebook
         case .failure:
@@ -241,12 +245,19 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         if let existingIndex {
             notebooks[existingIndex].pageIDs = notebook.pageIDs
             notebooks[existingIndex].sources = notebook.sources
-        } else { notebooks.append(notebook) }
+        } else {
+            notebooks.append(notebook)
+            undoHistory.record { [weak self] in await self?.moveNotebookToTrash(notebookID) ?? false }
+        }
         if pageStores[notebookID] != nil {
             for (entry, page) in zip(plan.newPages, pages) {
                 pageStores[notebookID]?[entry.id] = CanvasPageStore(page: page,
                     fileURL: Self.pageURL(entry.id, notebookID: notebookID, in: directoryURL), saveQueue: storageQueue)
             }
+        }
+        if existingIndex != nil { recordAddedPages(plan.newPages.map(\.id), notebookID: notebookID) }
+        if let stores = pageStores[notebookID] {
+            for (pageID, store) in stores { configureUndo(for: store, pageID: pageID, notebookID: notebookID) }
         }
         errorMessage = nil
         return CanvasImportPublication(notebookID: notebookID, importedPageCount: plan.newPages.count,
@@ -302,6 +313,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                                             revision: libraryRevision + 1, trash: trash)
         guard await saveMembership(library) else { return nil }
         folders.append(folder)
+        undoHistory.record { [weak self] in await self?.moveFolderToTrash(folder.id, confirmed: true) ?? false }
         return folder
     }
 
@@ -315,12 +327,14 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
             return false
         }
         guard folders[index].color != color else { return true }
+        let previous = folders[index].color
         var updatedFolders = folders
         updatedFolders[index].color = color
         let library = CanvasNotebookLibrary(notebooks: notebooks, folders: updatedFolders,
                                             revision: libraryRevision + 1, trash: trash)
         guard await saveMembership(library) else { return false }
         folders[index].color = color
+        undoHistory.record { [weak self] in await self?.setFolderColor(previous, for: folderID) ?? false }
         return true
     }
 
@@ -334,6 +348,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
             return false
         }
         guard notebooks[index].folderID != folderID else { return true }
+        let previous = notebooks[index].folderID
         var updatedNotebooks = notebooks
         updatedNotebooks[index].folderID = folderID
         let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders,
@@ -341,6 +356,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         guard await saveMembership(library) else { return false }
         // Keep any cover revision that changed while the index write was queued.
         notebooks[index].folderID = folderID
+        undoHistory.record { [weak self] in await self?.moveNotebook(notebookID, to: previous) ?? false }
         return true
     }
 
@@ -457,8 +473,10 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                     guard let self, self.notebooks.first(where: { $0.id == notebookID })?.pageIDs.first == pageID else { return }
                     self.updateCover(notebookID: notebookID, page: snapshot)
                 })
+            configureUndo(for: store, pageID: pageID, notebookID: notebookID)
             pageStores[notebookID]?[pageID] = store
             notebooks[index].pageIDs.insert(pageID, at: insertionIndex)
+            recordAddedPages([pageID], notebookID: notebookID)
             errorMessage = nil
             return store
         case .failure:
@@ -476,6 +494,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
             return false
         }
         guard notebooks[index].defaultPaper != paper else { return true }
+        let previous = notebooks[index].defaultPaper
         var updatedNotebooks = notebooks
         updatedNotebooks[index].defaultPaper = paper
         let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders, revision: libraryRevision + 1, trash: trash)
@@ -492,6 +511,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         if succeeded {
             libraryRevision = library.revision
             notebooks[index].defaultPaper = paper
+            undoHistory.record { [weak self] in await self?.setDefaultPaper(previous, for: notebookID) ?? false }
             errorMessage = nil
         } else {
             errorMessage = "The default paper could not be saved. Saved files are preserved."
@@ -558,6 +578,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                         self.updateCover(notebookID: id, page: snapshot)
                     })
             }
+            for (pageID, store) in stores { configureUndo(for: store, pageID: pageID, notebookID: id) }
             pageStores[id] = stores
             if let firstPage = pages.first { updateCover(notebookID: id, page: firstPage) }
             errorMessage = nil
@@ -565,6 +586,49 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         case .failure:
             errorMessage = "The notebook could not be opened. A page is missing or invalid. Saved files are preserved."
             return nil
+        }
+    }
+
+    /// Resolve the current store after Trash restore replaces retired page stores.
+    private func configureUndo(for store: CanvasPageStore, pageID: UUID, notebookID: UUID) {
+        store.permitsPreparedImage = { [weak self] in
+            self?.undoHistory.isUndoing != true && self?.isChangingTrash != true
+        }
+        store.onRecordUndo = { [weak self] snapshot, group in
+            self?.undoHistory.record(group: group) { [weak self] in
+                guard let self, self.notebooks.first(where: { $0.id == notebookID })?.pageIDs.contains(pageID) == true else { return false }
+                if self.pageStore(notebookID: notebookID, pageID: pageID) == nil {
+                    guard await self.openNotebook(notebookID) != nil else { return false }
+                }
+                guard let current = self.pageStore(notebookID: notebookID, pageID: pageID) else { return false }
+                return await current.restoreUndoSnapshot(snapshot)
+            }
+        }
+        store.onRecordInkUndo = { [weak self] page, drawing in
+            self?.undoHistory.record { [weak self] in
+                guard let self,
+                      self.notebooks.first(where: { $0.id == notebookID })?.pageIDs.contains(pageID) == true else { return false }
+                if self.pageStore(notebookID: notebookID, pageID: pageID) == nil {
+                    guard await self.openNotebook(notebookID) != nil else { return false }
+                }
+                guard let current = self.pageStore(notebookID: notebookID, pageID: pageID) else { return false }
+                var snapshot = page
+                snapshot.inkDrawingData = await Task.detached(priority: .utility) { drawing.dataRepresentation() }.value
+                return await current.restoreUndoSnapshot(snapshot)
+            }
+        }
+    }
+
+    private func recordAddedPages(_ ids: [UUID], notebookID: UUID) {
+        undoHistory.record { [weak self] in
+            guard let self else { return false }
+            for id in ids.reversed() {
+                // A failed write can be retried after some pages reached Trash.
+                if self.notebooks.first(where: { $0.id == notebookID })?.pageIDs.contains(id) == true {
+                    guard await self.movePageToTrash(id, in: notebookID) else { return false }
+                }
+            }
+            return true
         }
     }
 
@@ -620,7 +684,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         if let previous = coverPages[notebookID],
            previous.inkDrawingData == page.inkDrawingData,
            previous.textBoxes == page.textBoxes, previous.shapes == page.shapes,
-           previous.paper == page.paper, previous.importedBackground == page.importedBackground { return }
+           previous.paper == page.paper, previous.importedBackground == page.importedBackground, previous.images == page.images { return }
         coverPages[notebookID] = page
         let request = (coverRequests[notebookID] ?? 0) + 1
         coverRequests[notebookID] = request
@@ -664,6 +728,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
             library.notebooks[index].pageIDs.remove(at: position)
             library.trash.append(record)
             guard await self.publishTrash(library) else { return false }
+            self.recordTrashUndo(record)
             self.pageStores[notebookID]?[pageID]?.retireForTrash()
             self.pageStores[notebookID]?.removeValue(forKey: pageID)
             self.coverRequests[notebookID, default: 0] += 1
@@ -682,8 +747,10 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                   await self.flushCachedPages([notebookID]) else { return false }
             var library = self.trashSnapshot()
             guard let index = library.notebooks.firstIndex(where: { $0.id == notebookID }) else { return false }
-            library.trash.append(CanvasTrashRecord(content: .notebook(library.notebooks.remove(at: index))))
+            let record = CanvasTrashRecord(content: .notebook(library.notebooks.remove(at: index)))
+            library.trash.append(record)
             guard await self.publishTrash(library) else { return false }
+            self.recordTrashUndo(record)
             self.retireNotebookCache(notebookID)
             return true
         }
@@ -699,11 +766,30 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
             var library = self.trashSnapshot()
             guard let index = library.folders.firstIndex(where: { $0.id == folderID }) else { return false }
             let children = library.notebooks.filter { $0.folderID == .custom(folderID) }
-            library.trash.append(CanvasTrashRecord(content: .folder(library.folders.remove(at: index), children)))
+            let record = CanvasTrashRecord(content: .folder(library.folders.remove(at: index), children))
+            library.trash.append(record)
             library.notebooks.removeAll { $0.folderID == .custom(folderID) }
             guard await self.publishTrash(library) else { return false }
+            self.recordTrashUndo(record)
             ids.forEach(self.retireNotebookCache)
             return true
+        }
+    }
+
+    /// Trash record IDs change after a restore/delete pair; content IDs stay stable.
+    private func recordTrashUndo(_ record: CanvasTrashRecord) {
+        undoHistory.record { [weak self] in
+            guard let self else { return false }
+            let current = self.trash.first { candidate in
+                switch (record.content, candidate.content) {
+                case (.page(let a), .page(let b)): a.pageID == b.pageID && a.notebookID == b.notebookID
+                case (.notebook(let a), .notebook(let b)): a.id == b.id
+                case (.folder(let a, _), .folder(let b, _)): a.id == b.id
+                default: false
+                }
+            }
+            guard let current else { return false }
+            return await self.restoreFromTrash(current.id)
         }
     }
 
@@ -759,6 +845,14 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                 self.retireNotebookCache(page.notebookID)
                 _ = await self.openNotebook(page.notebookID)
             }
+            self.undoHistory.record { [weak self] in
+                guard let self else { return false }
+                switch record.content {
+                case .page(let page): return await self.movePageToTrash(page.pageID, in: page.notebookID)
+                case .notebook(let notebook): return await self.moveNotebookToTrash(notebook.id)
+                case .folder(let folder, _): return await self.moveFolderToTrash(folder.id, confirmed: true)
+                }
+            }
             return true
         }
     }
@@ -811,6 +905,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                 library.trash[index].deletionPending = true
             }
             guard await self.publishTrash(library) else { return false }
+            self.undoHistory.clearAfterPermanentDeletion()
             notebookIDs.forEach(self.retireNotebookCache)
             // Covers have a separate queue. Drain it before removing owned cover files.
             await withCheckedContinuation { continuation in
@@ -1114,6 +1209,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                 }
                 context.strokePath()
             }
+            for image in page.images { UIImage(data: image.data)?.draw(in: image.frame) }
             let drawing = (try? PKDrawing(data: page.inkDrawingData)) ?? PKDrawing()
             drawing.image(from: CGRect(origin: .zero, size: pageSize), scale: scale)
                 .draw(in: CGRect(origin: .zero, size: pageSize))

@@ -190,9 +190,14 @@ final class CanvasNotebookScrollHost: UIScrollView, UIScrollViewDelegate {
         for index in first...last {
             let entry = pages[index]
             let surface: CanvasSurfaceView
-            if let existing = surfaces[entry.id] {
+            if let existing = surfaces[entry.id], existing.isBound(to: entry.store) {
                 surface = existing
             } else {
+                if let old = surfaces[entry.id] {
+                    guard old.prepareForRemoval() else { continue }
+                    old.removeFromSuperview()
+                    observations.removeValue(forKey: entry.id)
+                }
                 surface = CanvasSurfaceView(store: entry.store)
                 surfaces[entry.id] = surface
                 column.addSubview(surface)

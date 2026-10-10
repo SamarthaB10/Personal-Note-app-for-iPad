@@ -53,6 +53,7 @@ struct ExportPageSnapshot: Sendable {
     let ink: ExportInk
     let textBoxes: [ExportTextBox]
     let legacyRectangles: [ExportLegacyRectangle]
+    var images: [CanvasPageImage] = []
 }
 
 /// Capture the ordered pages once. Do not pass stores, canvases, or UIKit views.
@@ -152,6 +153,10 @@ final class NotebookPDFExporter: Sendable {
                         UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
                             drawingResult = Result {
                                 try drawBackground(page.background, bounds: bounds, context: context)
+                                for image in page.images {
+                                    guard let value = UIImage(data: image.data) else { throw ExportPDFError.invalidPage }
+                                    value.draw(in: image.frame)
+                                }
                                 try drawInk(page.ink.decoded(), bounds: bounds, cancellation: cancellation)
                                 for shape in page.legacyRectangles {
                                     context.setStrokeColor(shape.color.color.cgColor)
@@ -256,6 +261,7 @@ final class NotebookPDFExporter: Sendable {
     private static func validate(_ page: ExportPageSnapshot) throws {
         guard valid(CGRect(origin: .zero, size: page.size)),
               page.size.width <= 14_400, page.size.height <= 14_400,
+              page.images.allSatisfy({ valid($0.frame) && CanvasImageAdapter.isValid($0.data) }),
               page.textBoxes.allSatisfy({ valid($0.frame) && $0.fontSize.isFinite && $0.fontSize > 0 && valid($0.color) }),
               page.legacyRectangles.allSatisfy({ valid($0.frame) && $0.width.isFinite && $0.width > 0 && valid($0.color) }) else {
             throw ExportPDFError.invalidPage

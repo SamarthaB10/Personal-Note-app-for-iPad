@@ -40,7 +40,7 @@ struct CanvasNotebookView: View {
             if !entries.isEmpty {
                 let activeIndex = min(pageIndex, entries.count - 1)
                 CanvasPrototypeRootView(
-                    store: entries[activeIndex].store, pages: entries,
+                    store: entries[activeIndex].store, undoHistory: library.undoHistory, pages: entries,
                     notebookTitle: currentNotebook.title,
                     importMessage: importMessage, navigationError: navigationError,
                     pageNumber: activeIndex + 1, pageCount: currentNotebook.pageIDs.count,
@@ -82,6 +82,9 @@ struct CanvasNotebookView: View {
             Text("Are you sure? Page \(request.pageNumber) will move to Trash. You can restore it later.")
         }
         .preferredColorScheme(appearance.colorScheme)
+        .onChange(of: library.notebooks.map(\.id)) { _, ids in
+            if !ids.contains(notebook.id) { onClose() }
+        }
         .onChange(of: appearance, initial: true) { _, value in
             CanvasToolSettings.shared.applyAppearance(value)
         }

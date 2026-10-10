@@ -24,7 +24,7 @@ struct CanvasPageView: UIViewRepresentable {
 }
 
 @MainActor
-final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizerDelegate {
+final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
     private let logicalSize = CanvasPageGeometry.size
     private let pageView = UIView()
     private let paperView = CanvasPaperBackgroundView()
@@ -33,6 +33,10 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     private var importedBackground: CanvasImportedBackground?
     private var backgroundTask: Task<Void, Never>?
     private let canvasView = PKCanvasView()
+    private let imageView = CanvasImageOverlayView()
+    private lazy var imageEditMenu = UIEditMenuInteraction(delegate: self)
+    private lazy var imageHold = UILongPressGestureRecognizer(target: self, action: #selector(showImageEditMenu(_:)))
+    private var imagePastePoint = CGPoint(x: 146, y: 186)
     private let itemView = CanvasItemOverlayView()
     private let selectionInkView = UIImageView()
     private let textBoxHighlightView = CanvasTextBoxHighlightView()
@@ -55,6 +59,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     private var scratchGestureEnabled: Bool?
     private var isUsingPencil = false
     private var hasPendingInkChanges = false
+    private var drawingBeforeStroke: PKDrawing?
+    private var strokeDidChange = false
     private var isApplyingCanvasDrawing = false
     private var pendingDrawingSave: DispatchWorkItem?
     private var scratchDrawingBefore: PKDrawing?
@@ -127,6 +133,11 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         backgroundStatus.isUserInteractionEnabled = false
         pageView.addSubview(backgroundStatus)
 
+        imageView.frame = pageView.bounds
+        imageView.isUserInteractionEnabled = false
+        imageView.isOpaque = false
+        imageView.backgroundColor = .clear
+        pageView.addSubview(imageView)
         canvasView.frame = pageView.bounds
         canvasView.delegate = self
         // PencilKit must display the saved ink colors in either paper appearance.
@@ -165,6 +176,10 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         fingerGesture.delegate = self
         fingerGesture.onEvent = { [weak self] event in self?.handleFingerEvent(event) }
         pageView.addGestureRecognizer(fingerGesture)
+        imageHold.delegate = self
+        imageHold.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        pageView.addGestureRecognizer(imageHold)
+        pageView.addInteraction(imageEditMenu)
 
         pencilToolGesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
         pencilToolGesture.delegate = self
@@ -222,6 +237,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     var isInteractingWithPage: Bool {
         isUsingPencil || activePathInput != nil || editor?.isFirstResponder == true
     }
+
+    func isBound(to store: CanvasPageStore) -> Bool { self.store === store }
 
     /// Flush before eviction. A newer surface's callback must remain installed.
     func prepareForRemoval() -> Bool {
@@ -370,6 +387,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         guard !isPreparedForRemoval else { return }
         updateImportedBackground(page.importedBackground)
         updatePaperAppearance()
+        imageView.images = page.images
+        imageView.selectedIDs = store.selection.imageIDs
         if selectionGesture != nil,
            configuredTool != tool || itemView.selection != store.selection {
             finishSelectionGesture(cancelled: true)
@@ -431,6 +450,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     }
 
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        drawingBeforeStroke = canvasView.drawing
+        strokeDidChange = false
         isUsingPencil = true
         pendingDrawingSave?.cancel()
         pendingDrawingSave = nil
@@ -438,7 +459,12 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
 
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         isUsingPencil = false
-        guard !scratchIsRecognized else { return }
+        guard !scratchIsRecognized else {
+            drawingBeforeStroke = nil
+            strokeDidChange = false
+            return
+        }
+        recordFinishedStrokeIfNeeded()
         if hasPendingInkChanges {
             scheduleDrawingSave(after: 0.35)
         } else {
@@ -449,8 +475,17 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard !isApplyingCanvasDrawing, !scratchIsRecognized else { return }
         hasPendingInkChanges = true
+        if drawingBeforeStroke != nil { strokeDidChange = true }
+        recordFinishedStrokeIfNeeded()
         guard !isUsingPencil else { return }
         scheduleDrawingSave(after: 0.35)
+    }
+
+    private func recordFinishedStrokeIfNeeded() {
+        guard !isUsingPencil, strokeDidChange, let before = drawingBeforeStroke else { return }
+        drawingBeforeStroke = nil
+        strokeDidChange = false
+        store.recordInkUndo(before)
     }
 
     func gestureRecognizer(
@@ -467,6 +502,56 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             if let editor, touch.view?.isDescendant(of: editor) == true { return false }
         }
         return true
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === imageHold {
+            return !isUsingPencil && activePathInput != .pencil && store.canWrite && (store.tool == .freehandLasso || store.tool == .boxedLasso || store.tool == .selection)
+        }
+        return true
+    }
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)) { return store.canWrite && UIPasteboard.general.hasImages }
+        if action == #selector(copy(_:)) { return !store.selection.imageIDs.isEmpty }
+        return false
+    }
+
+    @objc private func showImageEditMenu(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        imagePastePoint = gesture.location(in: pageView)
+        finishSelectionGesture(cancelled: true)
+        resetPagePath()
+        becomeFirstResponder()
+        imageEditMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: imagePastePoint))
+    }
+
+    override func copy(_ sender: Any?) { store.copySelectedImages() }
+
+    override func paste(_ sender: Any?) {
+        guard store.canWrite else { return }
+        let point = imagePastePoint
+        let copied = UIPasteboard.general.data(forPasteboardType: CanvasImageAdapter.clipboardType)
+        var bytes: Data?
+        for type in ["public.png", "public.jpeg", "public.heic", "public.tiff"] {
+            if let data = UIPasteboard.general.data(forPasteboardType: type) { bytes = data; break }
+        }
+        if copied == nil && bytes == nil { bytes = UIPasteboard.general.image?.pngData() }
+        guard copied != nil || bytes != nil else { return }
+        Task { [weak self, weak store] in
+            do {
+                let images: [CanvasPageImage]
+                if let copied {
+                    images = try await Task.detached(priority: .utility) { try CanvasImageAdapter.copiedImages(copied) }.value
+                } else if let bytes {
+                    images = [try await CanvasImageAdapter.prepare(bytes)]
+                } else { return }
+                guard let self, let store, !self.isPreparedForRemoval else { return }
+                try await store.insertPreparedImages(images, at: point)
+            } catch { store?.showImageError(error) }
+        }
     }
 
     private func configureInkTool(tool: CanvasTool, color: CanvasColor, width: CGFloat) {
@@ -521,7 +606,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         guard hasPendingInkChanges, allowDuringPencil || !isUsingPencil else { return }
         let drawing = canvasView.drawing
         hasPendingInkChanges = false
-        store.updateDrawing(drawing)
+        store.updateDrawing(drawing, recordUndo: store.onRecordInkUndo == nil)
         lastAppliedDrawingRevision = store.drawingRevision
     }
 
@@ -533,7 +618,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             return
         }
 
-        store.updateDrawing(drawingBefore)
+        store.updateDrawing(drawingBefore, recordUndo: store.onRecordInkUndo == nil)
         let filtered = store.scratchErase(
             drawingBefore: drawingBefore,
             path: path,
@@ -554,7 +639,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             scratchDrawingBefore = nil
             return
         }
-        store.updateDrawing(drawingBefore)
+        store.updateDrawing(drawingBefore, recordUndo: store.onRecordInkUndo == nil)
         setCanvasDrawing(drawingBefore)
         lastAppliedDrawingRevision = store.drawingRevision
         hasPendingInkChanges = false
@@ -655,9 +740,9 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         if extent < 8 {
             let hit = CanvasSelectionGeometry.selectObject(
                 at: start, drawing: canvasView.drawing,
-                textBoxes: store.page.textBoxes, shapes: store.page.shapes
+                textBoxes: store.page.textBoxes, shapes: store.page.shapes, images: store.page.images
             )
-            let hasObjectHit = !hit.textBoxIDs.isEmpty || !hit.shapeIDs.isEmpty
+            let hasObjectHit = !hit.textBoxIDs.isEmpty || !hit.shapeIDs.isEmpty || !hit.imageIDs.isEmpty
             let needsBoxChoice = CanvasSelectionGeometry.textBoxCandidates(at: start, in: store.page.textBoxes).count > 1
             if extent == 0 || hasObjectHit || needsBoxChoice {
                 store.selectObject(at: start)
@@ -687,7 +772,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     private func beginTouchedInkGesture(at point: CGPoint) -> Bool {
         let hit = CanvasSelectionGeometry.selectObject(
             at: point, drawing: canvasView.drawing,
-            textBoxes: store.page.textBoxes, shapes: store.page.shapes
+            textBoxes: store.page.textBoxes, shapes: store.page.shapes, images: store.page.images
         )
         guard !hit.strokeIndices.isEmpty, store.selectTouchedInk(at: point) else { return false }
         return beginSelectionGesture(at: point, touchedInk: true)
@@ -723,8 +808,14 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         let strokes = canvasView.drawing.strokes
         if !selected.isEmpty {
             let selectedDrawing = PKDrawing(strokes: strokes.enumerated().compactMap { selected.contains($0.offset) ? $0.element : nil })
-            selectionInkView.image = selectedDrawing.image(from: pageView.bounds, scale: 2)
+            let frame = selectedDrawing.bounds.insetBy(dx: -4, dy: -4).intersection(pageView.bounds)
+            if !frame.isNull, !frame.isEmpty {
+            let density = max(1, min(pageScreenScale * traitCollection.displayScale,
+                                     sqrt(8_000_000 / max(1, frame.width * frame.height))))
+            selectionInkView.frame = frame
+            selectionInkView.image = selectedDrawing.image(from: frame, scale: density)
             selectionInkView.isHidden = false
+            }
             setCanvasDrawing(PKDrawing(strokes: strokes.enumerated().compactMap { selected.contains($0.offset) ? nil : $0.element }))
         }
         selectionActions.isHidden = true
@@ -758,6 +849,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             ty: transform.ty + center.y * (selectionScale - 1)
         )
         itemView.selectionTransform = transform
+        imageView.selectionTransform = transform
         itemView.setNeedsDisplay()
     }
 
@@ -772,7 +864,9 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         selectionInkView.isHidden = true
         selectionInkView.image = nil
         selectionInkView.transform = .identity
+        selectionInkView.frame = pageView.bounds
         itemView.selectionTransform = .identity
+        imageView.selectionTransform = .identity
         if cancelled, let selectionDrawingBefore { setCanvasDrawing(selectionDrawingBefore) }
         self.selectionDrawingBefore = nil
         apply(store.page, tool: store.tool, color: store.color, width: store.inkWidth)
@@ -784,10 +878,13 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         selectionActions.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.96)
         selectionActions.layer.cornerRadius = 16
         selectionActions.clipsToBounds = true
-        for (title, action) in [("Resize", #selector(armSelectionResize)), ("Delete", #selector(deleteSelectedItems)), ("Clear", #selector(clearSelectedItems))] {
+        for (title, action) in [("Resize", #selector(armSelectionResize)), ("Copy", #selector(copySelectedImage)), ("Delete", #selector(deleteSelectedItems)), ("Clear", #selector(clearSelectedItems))] {
             let button = UIButton(type: .system)
             button.setTitle(title, for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+            button.titleLabel?.adjustsFontSizeToFitWidth = true
+            button.titleLabel?.minimumScaleFactor = 0.7
+            button.titleLabel?.numberOfLines = 1
             button.setTitleColor(title == "Delete" ? .systemRed : .label, for: .normal)
             button.addTarget(self, action: action, for: .touchUpInside)
             let width = button.widthAnchor.constraint(equalToConstant: 64)
@@ -807,13 +904,24 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         }
         let outlineBounds = store.selectionOutline.reduce(bounds) { $0.union(CGRect(origin: $1, size: CGSize(width: 0.1, height: 0.1))) }
         let pageScale = pageScreenScale
-        let buttonWidth = 44 / pageScale
+        let count = CGFloat(selectionActions.arrangedSubviews.count)
+        let buttonWidth = max(44, min(60, (logicalSize.width * pageScale - 8) / count)) / pageScale
         let height = 44 / pageScale
-        let width = buttonWidth * 3
+        let width = buttonWidth * CGFloat(selectionActions.arrangedSubviews.count)
         actionWidthConstraints.forEach { $0.constant = buttonWidth }
         selectionActions.layer.cornerRadius = 16 / pageScale
         for case let button as UIButton in selectionActions.arrangedSubviews {
-            button.titleLabel?.font = .systemFont(ofSize: 13 / pageScale, weight: .semibold)
+            button.isEnabled = button.title(for: .normal) != "Copy" || !store.selection.imageIDs.isEmpty
+            var configuration = UIButton.Configuration.plain()
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 2 / pageScale, bottom: 0, trailing: 2 / pageScale)
+            configuration.title = button.title(for: .normal)
+            configuration.baseForegroundColor = configuration.title == "Delete" ? .systemRed : .label
+            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+                var attributes = attributes
+                attributes.font = .systemFont(ofSize: 11 / pageScale, weight: .semibold)
+                return attributes
+            }
+            button.configuration = configuration
         }
         let x = min(max(outlineBounds.midX - width / 2, 4), logicalSize.width - width - 4)
         let y = outlineBounds.minY >= height + 8 ? outlineBounds.minY - height - 6 : min(outlineBounds.maxY + 8, logicalSize.height - height - 4)
@@ -826,6 +934,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         selectionActions.arrangedSubviews.first?.accessibilityValue = nil
         selectionActions.arrangedSubviews.first?.backgroundColor = .clear
     }
+
+    @objc private func copySelectedImage() { store.copySelectedImages() }
 
     @objc private func armSelectionResize() {
         resizeIsArmed = true
