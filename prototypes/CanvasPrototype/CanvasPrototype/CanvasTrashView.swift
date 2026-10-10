@@ -47,25 +47,3 @@ struct CanvasTrashView: View {
         }
     }
 }
-
-/// Put this control in a custom folder header. Do not show it for Unfiled.
-struct CanvasDeleteFolderButton: View {
-    @ObservedObject var store: CanvasNotebookStore
-    let folder: CanvasFolder
-    let onDeleted: () -> Void
-    @State private var showsConfirmation = false
-
-    var body: some View {
-        Button("Delete Folder", role: .destructive) { showsConfirmation = true }
-            .disabled(store.isChangingTrash)
-            .confirmationDialog("Move \(folder.name) and its notebooks to Trash?",
-                                isPresented: $showsConfirmation, titleVisibility: .visible) {
-                Button("Move Folder to Trash", role: .destructive) {
-                    Task {
-                        if await store.moveFolderToTrash(folder.id, confirmed: true) { onDeleted() }
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: { Text("Restore in Trash brings the folder and its notebooks back together.") }
-    }
-}

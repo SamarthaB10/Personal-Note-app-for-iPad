@@ -25,6 +25,8 @@ Page changes save automatically through a serial background queue and atomic fil
 
 Local storage does not prove exclusion from device cloud backup. Trash and recovery preserve deleted content until confirmed permanent deletion. Editable backup remains later work.
 
+Trash opens from the icon at the bottom of the folder sidebar. Press and hold a custom folder to change its color or select confirmed Delete. The ten named folder colors persist and return with a restored folder. Existing folders start blue. In a notebook, the trash icon beside Home asks before moving the current page to Trash. The final page cannot be deleted. Notebook Delete and Move remain together in the cover's press-and-hold menu. The [sidebar UI record](../../docs/implementation/sidebar-trash-folder-colors.md) records these changes and their verification limits.
+
 ## Manual checks
 
 1. In Unfiled, select Create and enter a notebook name. Confirm that the notebook opens with seven blank pages. Scroll to write a different mark on pages 1, 4, and 7. Add pages at the end, mark them, and confirm their order after reopening. Return to the library and confirm its title, cover, and folder count. Reopen the app offline and confirm the membership, page count, order, and editable marks.

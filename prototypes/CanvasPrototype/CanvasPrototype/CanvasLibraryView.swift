@@ -100,12 +100,28 @@ struct CanvasLibraryView: View {
     }
 
     private var folderList: some View {
-        VStack {
-            Button("Trash (\(store.trash.count))") { showsTrash = true }.frame(minHeight: 44)
+        VStack(spacing: 0) {
             CanvasFolderListView(store: store, selectedFolderID: selectedFolderID,
                                  onSelect: { selectedFolderID = $0 },
-                                 onCreate: { showsCreateFolder = true })
+                                 onCreate: { showsCreateFolder = true },
+                                 onDeleted: { id in
+                                     if selectedFolderID == id { selectedFolderID = nil }
+                                 })
+            Divider()
+            HStack {
+                Button { showsTrash = true } label: {
+                    CanvasLucideIcon(kind: .trash).frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Trash")
+                .accessibilityValue("\(store.trash.count) items")
+                .accessibilityHint("Open deleted items to restore or delete permanently")
+                .help("Trash")
+                Spacer()
+            }
+            .padding(.horizontal, 20).padding(.vertical, 8)
         }
+        .background(Color(uiColor: .secondarySystemBackground))
+        .disabled(isOpening || isMoving || store.isLoading)
     }
 
     private var folderOverview: some View {
@@ -128,10 +144,6 @@ struct CanvasLibraryView: View {
                     }.frame(minHeight: 44)
                 }
                 .accessibilityLabel("Return to folder list")
-                if case .custom(let id) = selectedFolderID,
-                   let folder = store.folders.first(where: { $0.id == id }) {
-                    CanvasDeleteFolderButton(store: store, folder: folder) { selectedFolderID = nil }
-                }
                 Text(store.folderName(for: selectedFolderID ?? .unfiled))
                     .font(.largeTitle.weight(.bold)).accessibilityAddTraits(.isHeader)
                 Text(visibleNotebooks.isEmpty ? "Create a notebook to start writing." : "\(visibleNotebooks.count) notebooks")

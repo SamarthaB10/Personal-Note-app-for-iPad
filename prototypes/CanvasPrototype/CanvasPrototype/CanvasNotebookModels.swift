@@ -27,7 +27,24 @@ enum CanvasFolderID: Codable, Hashable, Sendable {
 struct CanvasFolder: Codable, Identifiable {
     var id: UUID
     var name: String
+    var color: CanvasFolderColor
     var folderID: CanvasFolderID { .custom(id) }
+
+    init(id: UUID, name: String, color: CanvasFolderColor = .blue) {
+        self.id = id
+        self.name = name
+        self.color = color
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, color }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        // Older library indexes and folder Trash records have no color.
+        color = try values.decodeIfPresent(CanvasFolderColor.self, forKey: .color) ?? .blue
+    }
 }
 
 struct CanvasNotebook: Codable, Identifiable {

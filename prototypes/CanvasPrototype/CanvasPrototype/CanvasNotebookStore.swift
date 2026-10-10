@@ -305,6 +305,25 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         return folder
     }
 
+    /// Save a sidebar color through the same FIFO permit as folder and Trash changes.
+    func setFolderColor(_ color: CanvasFolderColor, for folderID: UUID) async -> Bool {
+        guard storageIsValid, !isLoading else { return false }
+        await acquireIndexMutation()
+        defer { releaseIndexMutation() }
+        guard let index = folders.firstIndex(where: { $0.id == folderID }) else {
+            errorMessage = "The folder could not be found. Saved files are preserved."
+            return false
+        }
+        guard folders[index].color != color else { return true }
+        var updatedFolders = folders
+        updatedFolders[index].color = color
+        let library = CanvasNotebookLibrary(notebooks: notebooks, folders: updatedFolders,
+                                            revision: libraryRevision + 1, trash: trash)
+        guard await saveMembership(library) else { return false }
+        folders[index].color = color
+        return true
+    }
+
     /// Change only membership. Notebook directories and editable pages stay in place.
     func moveNotebook(_ notebookID: UUID, to folderID: CanvasFolderID) async -> Bool {
         guard storageIsValid, !isLoading else { return false }

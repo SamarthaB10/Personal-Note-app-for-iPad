@@ -13,8 +13,8 @@ struct CanvasNotebookView: View {
     @State private var isNavigating = false
     @State private var isAddingPage = false
     @State private var isChangingPaper = false
-    @State private var isMovingNotebook = false
     @State private var isDeletingPage = false
+    @State private var pageToDelete: CanvasPageDeletionRequest?
     @State private var navigationError: String?
     @State private var scrollRequest: CanvasNotebookScrollRequest?
     @State private var zoomPercent = 100
@@ -43,21 +43,6 @@ struct CanvasNotebookView: View {
                 Spacer()
                 NotebookExportToFilesControl(captureSnapshot: captureExportSnapshot)
                     .disabled(isNavigating || importRequest != nil)
-                Menu {
-                    Button("Unfiled") { moveNotebook(to: .unfiled) }
-                        .disabled(currentNotebook.folderID == .unfiled)
-                    ForEach(library.folders) { folder in
-                        Button(folder.name) { moveNotebook(to: folder.folderID) }
-                            .disabled(currentNotebook.folderID == folder.folderID)
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        CanvasLucideIcon(kind: .folder)
-                        Text(isMovingNotebook ? "Moving…" : "Move notebook")
-                    }.frame(minHeight: 44)
-                }
-                .disabled(isMovingNotebook || isNavigating || isAddingPage || isChangingPaper)
-                .accessibilityLabel("Move notebook to folder")
             }
             .padding(.horizontal, 12)
             .background(Color(uiColor: .secondarySystemBackground))
@@ -71,19 +56,6 @@ struct CanvasNotebookView: View {
             }
             if !entries.isEmpty {
                 let activeIndex = min(pageIndex, entries.count - 1)
-                Button("Delete Current Page", role: .destructive) {
-                    guard !isDeletingPage else { return }
-                    isDeletingPage = true
-                    let id = entries[activeIndex].id
-                    Task {
-                        if await library.movePageToTrash(id, in: notebook.id) {
-                            pageIndex = min(activeIndex, max(0, currentNotebook.pageIDs.count - 1))
-                        } else { navigationError = library.errorMessage }
-                        isDeletingPage = false
-                    }
-                }
-                .disabled(currentNotebook.pageIDs.count <= 1 || isDeletingPage || isNavigating || isAddingPage || isChangingPaper || isMovingNotebook || library.isChangingTrash)
-                .accessibilityHint("Move this page to Trash. Keep at least one page.")
                 CanvasPrototypeRootView(
                     store: entries[activeIndex].store, pages: entries,
                     notebookTitle: currentNotebook.title,
@@ -93,7 +65,8 @@ struct CanvasNotebookView: View {
                     isChangingPaper: isChangingPaper,
                     appearance: appearance, zoomPercent: zoomPercent,
                     scrollRequest: scrollRequest,
-                    onBack: close, onPageChange: requestPage,
+                    onBack: close, canDeleteCurrentPage: canDeleteCurrentPage,
+                    onDeleteCurrentPage: requestPageDeletion, onPageChange: requestPage,
                     onVisiblePageChange: setVisiblePage,
                     onZoomChange: { zoomPercent = $0 }, onAddPage: addPage,
                     onAddPageAfterCurrent: addPageAfterCurrent,
@@ -101,7 +74,7 @@ struct CanvasNotebookView: View {
                     onDefaultPaperChange: setDefaultPaper,
                     onAppearanceChange: { appearanceValue = $0.rawValue }
                 )
-                .allowsHitTesting(!isNavigating && !library.isChangingTrash)
+                .allowsHitTesting(!isNavigating && !isDeletingPage && !library.isChangingTrash)
             } else {
                 Text("The notebook pages are unavailable. Saved files are preserved.")
                     .padding()
@@ -115,6 +88,14 @@ struct CanvasNotebookView: View {
             }
         }
         .disabled(library.isChangingTrash)
+        .alert("Delete current page", isPresented: Binding(
+            get: { pageToDelete != nil }, set: { if !$0 { pageToDelete = nil } }
+        ), presenting: pageToDelete) { request in
+            Button("Delete", role: .destructive) { deletePage(request) }
+            Button("Cancel", role: .cancel) { pageToDelete = nil }
+        } message: { request in
+            Text("Are you sure? Page \(request.pageNumber) will move to Trash. You can restore it later.")
+        }
         .preferredColorScheme(appearance.colorScheme)
         .onChange(of: appearance, initial: true) { _, value in
             CanvasToolSettings.shared.applyAppearance(value)
@@ -184,21 +165,35 @@ struct CanvasNotebookView: View {
         importRequest = CanvasNotebookImportRequest(pageID: entries[pageIndex].id)
     }
 
-    private func moveNotebook(to folderID: CanvasFolderID) {
-        guard !isMovingNotebook, !isNavigating, !isAddingPage, !isChangingPaper else { return }
-        isMovingNotebook = true
+    private var canDeleteCurrentPage: Bool {
+        currentNotebook.pageIDs.count > 1 && !isDeletingPage && !isNavigating
+            && !isAddingPage && !isChangingPaper && !library.isChangingTrash && importRequest == nil
+    }
+
+    private func requestPageDeletion() {
+        let entries = orderedPages
+        guard canDeleteCurrentPage, entries.indices.contains(pageIndex) else { return }
+        // Keep the page identity fixed while the confirmation is open.
+        pageToDelete = CanvasPageDeletionRequest(pageID: entries[pageIndex].id, pageNumber: pageIndex + 1)
+    }
+
+    private func deletePage(_ request: CanvasPageDeletionRequest) {
+        pageToDelete = nil
+        guard canDeleteCurrentPage else { return }
+        isDeletingPage = true
         Task {
-            if await library.moveNotebook(notebook.id, to: folderID) {
+            if await library.movePageToTrash(request.pageID, in: notebook.id) {
+                pageIndex = min(pageIndex, max(0, currentNotebook.pageIDs.count - 1))
                 navigationError = nil
             } else {
-                navigationError = library.errorMessage ?? "The notebook could not be moved. Saved files are preserved."
+                navigationError = library.errorMessage
             }
-            isMovingNotebook = false
+            isDeletingPage = false
         }
     }
 
     private func close() {
-        guard !isNavigating, !isAddingPage, !isChangingPaper, !isMovingNotebook else { return }
+        guard !isNavigating, !isAddingPage, !isChangingPaper, !isDeletingPage else { return }
         isNavigating = true
         orderedPages.forEach { $0.store.finishTextEditing() }
         Task {
@@ -276,4 +271,9 @@ struct CanvasNotebookView: View {
 private struct CanvasNotebookImportRequest: Identifiable {
     let id = UUID()
     let pageID: UUID
+}
+
+private struct CanvasPageDeletionRequest {
+    let pageID: UUID
+    let pageNumber: Int
 }

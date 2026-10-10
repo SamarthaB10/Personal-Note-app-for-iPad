@@ -10,7 +10,7 @@ All membership writes preserve Trash through the same FIFO index permit and revi
 
 Permanent deletion first records a durable pending manifest. It removes only exact owned page, cover, source, metadata, and display asset files with no remaining page reference. A shared imported source remains while an active or recoverable page needs it. Original Files-picker sources are not cleanup targets. Unknown and unpublished files are preserved. A failed cleanup stays pending and permits an explicit retry after reopening. It cannot restore partially removed content.
 
-The full combined source typecheck passed with warnings treated as errors, exit 0. The signed physical iPad build passed, exit 0. The update installed, exit 0. Fresh parallel Standards and Spec source reviews are running. Launch passed, exit 0. Capture and new physical behavior checks remain pending. No full new physical pass is claimed.
+Before the later UI changes, the full combined source typecheck passed with warnings treated as errors, exit 0. The signed physical iPad build, update installation, launch, and screenshot capture passed, exit 0. The final Standards and Spec source reviews completed with no findings. These are source and installation results. New physical behavior checks remain pending. The later [sidebar UI record](sidebar-trash-folder-colors.md) records the new controls and their checks. No full new physical pass is claimed.
 
 Required focused checks are notebook and folder Delete/restore, page Delete and final-page protection, press-and-hold Move/Delete menus, offline reopen, imported source retention and final-reference cleanup, permanent failure/retry, and restored covers. Permanent deletion checks must use disposable content. No real note was deleted by automation.
 
