@@ -75,6 +75,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     private var isPreparedForRemoval = false
     var notebookZoomScale: CGFloat = 1 {
         didSet {
+            updateInkViewport()
             itemView.screenScale = pageScreenScale
             itemView.setNeedsDisplay()
             if selectionGesture == nil { updateSelectionActions() }
@@ -135,6 +136,10 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         canvasView.drawingPolicy = .pencilOnly
         canvasView.isRulerActive = false
         canvasView.isScrollEnabled = false
+        canvasView.contentInsetAdjustmentBehavior = .never
+        canvasView.minimumZoomScale = 1
+        canvasView.maximumZoomScale = 1
+        canvasView.pinchGestureRecognizer?.isEnabled = false
         pageView.addSubview(canvasView)
 
         selectionInkView.frame = pageView.bounds
@@ -332,9 +337,33 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         pageView.bounds = CGRect(origin: .zero, size: logicalSize)
         pageView.center = CGPoint(x: bounds.midX, y: bounds.midY)
         pageView.transform = CGAffineTransform(scaleX: scale, y: scale)
+        updateInkViewport()
         itemView.screenScale = pageScreenScale
         itemView.setNeedsDisplay()
         if selectionGesture == nil { updateSelectionActions() }
+    }
+
+    /// Let PencilKit render at the displayed zoom, rather than enlarge its old pixels.
+    /// The inverse view transform keeps input and stored strokes in page coordinates.
+    private func updateInkViewport() {
+        let scale = pageScreenScale
+        let size = CGSize(width: logicalSize.width * scale, height: logicalSize.height * scale)
+        if canvasView.bounds.size != size { canvasView.bounds.size = size }
+        canvasView.center = CGPoint(x: logicalSize.width / 2, y: logicalSize.height / 2)
+        canvasView.transform = CGAffineTransform(scaleX: 1 / scale, y: 1 / scale)
+        // Open only the range needed to set the notebook's rendering scale.
+        canvasView.minimumZoomScale = min(scale, canvasView.zoomScale)
+        canvasView.maximumZoomScale = max(scale, canvasView.zoomScale)
+        if canvasView.zoomScale != scale {
+            canvasView.setZoomScale(scale, animated: false)
+        }
+        // PencilKit creates its navigation controls during setup. Lock them after
+        // setting the scale so only the notebook can zoom or move page content.
+        canvasView.minimumZoomScale = scale
+        canvasView.maximumZoomScale = scale
+        canvasView.pinchGestureRecognizer?.isEnabled = false
+        canvasView.panGestureRecognizer.isEnabled = false
+        if canvasView.contentOffset != .zero { canvasView.contentOffset = .zero }
     }
 
     func apply(_ page: CanvasPageData, tool: CanvasTool, color: CanvasColor, width: CGFloat) {

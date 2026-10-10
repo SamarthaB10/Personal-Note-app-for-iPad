@@ -88,3 +88,52 @@ Required physical check: circle a small handwritten item and start movement at o
 
 - `python3 /private/tmp/ipad-notes-issue4-device.py install`: exit 0 for this update. The existing app and local notes were kept.
 - `python3 /private/tmp/ipad-notes-issue4-device.py launch`: exit 0 for this update. Opened it on the connected iPad.
+
+## Independent ink zoom: confirmed cause and correction
+
+The user's 17:33 iPad screenshot showed tiny ink on a large page while the dock read 93%. The user then confirmed that one pinch changed the ink alone, while the notebook gesture changed the page width and percentage. The earlier outer zoom limit did not correct this separate ink navigation path.
+
+The simulator could not finish its boot and installation commands. The follow-up therefore used a temporary signed diagnosis app on the connected physical iPad. It used the real notebook host and canvas adapter with a separate temporary fixture. It did not load or change the user's notebooks. The full app was restored after the check.
+
+`python3 /tmp/run-notes-ink-zoom-physical.py` failed before the correction:
+
+```text
+ATTACHED outer=1.0 ink=1.4705882352941178 min=0.1 max=10.0 pinchExists=true pinchEnabled=true
+NOTEBOOK93 outer=0.93 ink=1.3676470588235297 min=0.1 max=10.0 pinchExists=true pinchEnabled=true
+INNER_ZOOM_OUT outer=0.93 ink=0.1 min=0.1 max=10.0 pinchExists=true pinchEnabled=true
+FAIL ink shrinks while notebook stays at 93 percent
+FAIL native pinch enabled after attachment
+```
+
+PencilKit created an active navigation control after the initial disable call. The native ink canvas retained a broad zoom range independent of the notebook. The probe called the native zoom setter to demonstrate this range; it did not synthesize finger touches. The user's physical pinch result supplies the touch evidence.
+
+The adapter now sets only the rendering scale requested by the notebook. It then locks native minimum and maximum zoom to that scale and disables native pinch and pan. It repeats this setup after notebook zoom and surface layout. The existing inverse rendering transform keeps input and stored ink in page coordinates. The notebook retains its own finger pinch and pan. Saved ink is not transformed or rewritten by this correction.
+
+The same physical command returned exit 0 after correction:
+
+```text
+ATTACHED outer=1.0 ink=1.4705882352941178 min=1.4705882352941178 max=1.4705882352941178 pinchExists=false pinchEnabled=false
+NOTEBOOK93 outer=0.93 ink=1.3676470588235297 min=1.3676470588235297 max=1.3676470588235297 pinchExists=false pinchEnabled=false
+INNER_ZOOM_OUT outer=0.93 ink=1.3676470588235297 min=1.3676470588235297 max=1.3676470588235297 pinchExists=false pinchEnabled=false
+PASS ink cannot shrink independently
+PASS native pinch disabled after attachment
+PASS notebook pinch stays enabled and ink stays aligned through zoom changes
+PASS tool switches keep ink navigation locked
+```
+
+The final two checks exercised notebook scales 0.7, 3, 1, and 0.93 and switched Highlighter → Freehand lasso → Box lasso → Pen. They checked matching numerical rendering scales, unchanged fixture drawing bounds, and recognizer states. The wording "aligned" in the temporary output refers to those numerical checks; it is not a visual or physical handwriting result.
+
+Additional commands and results:
+
+- `xcodebuild -quiet -project /tmp/notes-tool-baseline/CanvasPrototype/CanvasPrototype.xcodeproj -scheme CanvasPrototype -destination 'id=<connected-ipad>' -derivedDataPath /tmp/NotesInkZoomPhysicalRepro CODE_SIGNING_ALLOWED=YES CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM='<local-personal-team>' -allowProvisioningUpdates build`: exit 0 for baseline, correction, and extended diagnosis apps. The existing interface-orientation warning remains.
+- `xcrun swiftc -frontend -parse /tmp/notes-tool-baseline/CanvasPrototype/CanvasPrototype/CanvasPrototypeApp.swift`: exit 0 for the temporary probe entry point.
+- Full-source warnings-as-errors `xcrun swiftc -typecheck` command recorded above: exit 0 after this correction.
+- Signed full-app build command recorded above, without `-allowProvisioningDeviceRegistration`: exit 0. Log: `/tmp/notes-ink-zoom-ipad-build.log`.
+- `python3 /private/tmp/ipad-notes-issue4-device.py install` and `python3 /private/tmp/ipad-notes-issue4-device.py launch`: exit 0. Restored and opened the corrected full app on the iPad.
+- `git diff --check`: exit 0. Standards and Spec reviews of both the task diff and intended commit diff: no findings.
+
+The intended commit includes the related rendering viewport support needed by this lock. Other pending image, undo, library, toolbar, and canvas edits remain separate. No unit or integration tests, dependencies, database, cloud note storage, PR, push, or production deployment were added. Local Apple signing services were used. Temporary artifacts stay outside the repository.
+
+Required user check: pinch on ink and blank paper. The complete page, ink, and typed text must scale together, and the percentage must change with them. Try repeated inward and outward pinches, then write and use lasso. Check scratch-and-hold during fast writing separately; the random scratch report is still open.
+
+Cleanup: the temporary app workspace was moved from `/tmp/notes-tool-baseline` to `/tmp/notes-debug/ink-zoom-probe-workspace`. The full iPad app entry point was not changed. No debug logging was added to repository source.
