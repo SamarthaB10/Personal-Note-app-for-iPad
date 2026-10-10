@@ -264,18 +264,21 @@ struct CanvasPageData: Codable {
     var shapes: [CanvasShape]
     var scratchEraseEnabled: Bool
     var paper: CanvasPaper = .blank
+    var importedBackground: CanvasImportedBackground?
 
     init(inkDrawingData: Data, textBoxes: [CanvasTextBox], shapes: [CanvasShape],
-         scratchEraseEnabled: Bool, paper: CanvasPaper = .blank) {
+         scratchEraseEnabled: Bool, paper: CanvasPaper = .blank,
+         importedBackground: CanvasImportedBackground? = nil) {
         self.inkDrawingData = inkDrawingData
         self.textBoxes = textBoxes
         self.shapes = shapes
         self.scratchEraseEnabled = scratchEraseEnabled
         self.paper = paper
+        self.importedBackground = importedBackground
     }
 
     private enum CodingKeys: String, CodingKey {
-        case inkDrawingData, textBoxes, shapes, scratchEraseEnabled, paper
+        case inkDrawingData, textBoxes, shapes, scratchEraseEnabled, paper, importedBackground
     }
 
     init(from decoder: Decoder) throws {
@@ -285,6 +288,7 @@ struct CanvasPageData: Codable {
         shapes = try values.decode([CanvasShape].self, forKey: .shapes)
         scratchEraseEnabled = try values.decode(Bool.self, forKey: .scratchEraseEnabled)
         paper = try values.decodeIfPresent(CanvasPaper.self, forKey: .paper) ?? .blank
+        importedBackground = try values.decodeIfPresent(CanvasImportedBackground.self, forKey: .importedBackground)
     }
 
     static let empty = CanvasPageData(

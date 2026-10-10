@@ -1,0 +1,15 @@
+# PDF and image import
+
+Issue: [9](https://github.com/SamarthaB10/Personal-Note-app-for-iPad/issues/9).
+
+Create or Import File offers a blank notebook or Import from Files in its menu. Covers align at the top. Notebook Move uses a press-and-hold context menu; extra action buttons below covers are removed. A PDF creates a notebook in the selected folder with its source pages in order. A supported single-frame image creates one page. An existing notebook has a plus menu and Import from Files; imported PDF pages go immediately after the current page. A stable page ID anchors insertion. Both paths stop at 300 pages and report how many pages did not fit. The complete source file remains stored, including omitted pages.
+
+The native Files picker opens the selected source. A coordinated, security-scoped copy preserves its full bytes and SHA-256. Imported source content is fixed. User ink, shape ink, and text boxes remain separate editable page data. The store writes local sources, display assets, metadata, and page JSON before it publishes page order in the atomic library index. Folder data and other notebooks are preserved.
+
+PDF crop bounds and rotation are fitted onto the annotation page. Source annotations remain visible. Display assets permit offline reopening of password PDFs without a saved password. Incorrect passwords permit retry. Images apply their saved orientation. Screen and cover use the same fixed rendering. Light and dark modes do not tint source colors. Background reads and rendering run on utility queues with bounded images and a limited cache. A missing source has a visible error; it does not become a blank page.
+
+The full combined source typecheck passed with warnings treated as errors, exit 0. The signed physical iPad build passed, exit 0. The first independent source review found three source gaps: queued render cancellation, cached-open source checks, and local symbolic-link rejection. Main added cancellation flags, repeated source checks for cached opens, and validated local resource boundaries. The corrected full source typecheck passed, exit 0. The final combined build and fresh source reviews will cover these fixes. The update installed and launched on the connected iPad, exit 0. A physical capture shows the new import controls while the iPad is in screenshot Markup. Main owns the remaining physical checks. Isolated worker typechecks do not establish device behavior.
+
+Required new checks include Files import into a selected folder, insertion and order, 300-page cutoff, image orientation, crop and rotation, password retry and offline reopening, unchanged original bytes, fixed source colors, annotation persistence, and writing during background work. No new physical pass is claimed.
+
+No unit or integration tests were written or run. No third-party dependency, database, app cloud sync, paid service, or production deployment was added. A Files provider can fetch a selected file through the system. Partial unpublished files are preserved after write failure. Exact resource cleanup is later issue 11 work.

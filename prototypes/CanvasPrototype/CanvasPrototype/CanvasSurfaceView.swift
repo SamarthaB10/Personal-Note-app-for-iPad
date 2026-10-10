@@ -29,6 +29,9 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     private let pageView = UIView()
     private let paperView = CanvasPaperBackgroundView()
     private let backgroundView = UIImageView()
+    private let backgroundStatus = UILabel()
+    private var importedBackground: CanvasImportedBackground?
+    private var backgroundTask: Task<Void, Never>?
     private let canvasView = PKCanvasView()
     private let itemView = CanvasItemOverlayView()
     private let selectionInkView = UIImageView()
@@ -114,6 +117,14 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         backgroundView.image = store.showsPrototypeBackground ? Self.loadPDFBackground() : nil
         backgroundView.isUserInteractionEnabled = false
         pageView.addSubview(backgroundView)
+        backgroundStatus.frame = CGRect(x: 16, y: 16, width: logicalSize.width - 32, height: 72)
+        backgroundStatus.numberOfLines = 3
+        backgroundStatus.font = .preferredFont(forTextStyle: .body)
+        backgroundStatus.textColor = .black
+        backgroundStatus.backgroundColor = UIColor.white.withAlphaComponent(0.95)
+        backgroundStatus.isHidden = true
+        backgroundStatus.isUserInteractionEnabled = false
+        pageView.addSubview(backgroundStatus)
 
         canvasView.frame = pageView.bounds
         canvasView.delegate = self
@@ -212,6 +223,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         ownsFlushCallback = false
         store.onFlushCanvasDrawing?()
         if ownsFlushCallback { store.onFlushCanvasDrawing = nil }
+        backgroundTask?.cancel()
+        backgroundTask = nil
         isPreparedForRemoval = true
         canvasView.delegate = nil
         fingerGesture.isEnabled = false
@@ -234,13 +247,46 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     }
 
     private func updatePaperAppearance() {
-        let hasPDF = backgroundView.image != nil
+        let hasPDF = store.page.importedBackground != nil || backgroundView.image != nil
         pageView.backgroundColor = hasPDF ? .white : .systemBackground
         paperView.paper = store.page.paper
         paperView.isHidden = hasPDF
         paperView.setNeedsDisplay()
         pageView.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
         editor?.backgroundColor = hasPDF ? .white : .systemBackground
+    }
+
+    /// A utility queue renders fixed content. It never reads or writes the live drawing.
+    private func updateImportedBackground(_ background: CanvasImportedBackground?) {
+        guard background != importedBackground else { return }
+        importedBackground = background
+        backgroundTask?.cancel()
+        guard let background else {
+            backgroundView.image = store.showsPrototypeBackground ? Self.loadPDFBackground() : nil
+            backgroundStatus.isHidden = true
+            return
+        }
+        backgroundView.image = nil
+        backgroundStatus.text = "Loading source background…"
+        backgroundStatus.isHidden = false
+        guard let directory = store.notebookDirectoryURL else {
+            backgroundStatus.text = "The source background is unavailable. Saved content is preserved."
+            return
+        }
+        backgroundTask = Task { [weak self] in
+            do {
+                let image = try await CanvasImportedRenderCache.shared.image(background, notebookDirectory: directory)
+                guard let self, !Task.isCancelled, !self.isPreparedForRemoval,
+                      self.importedBackground == background else { return }
+                self.backgroundView.image = image
+                self.backgroundStatus.isHidden = true
+                self.updatePaperAppearance()
+            } catch {
+                guard let self, !Task.isCancelled, !self.isPreparedForRemoval else { return }
+                self.backgroundStatus.text = "The source background could not be read. Close and reopen this notebook to retry. Saved content is preserved."
+                self.backgroundStatus.isHidden = false
+            }
+        }
     }
 
     override func layoutSubviews() {
@@ -257,6 +303,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
 
     func apply(_ page: CanvasPageData, tool: CanvasTool, color: CanvasColor, width: CGFloat) {
         guard !isPreparedForRemoval else { return }
+        updateImportedBackground(page.importedBackground)
         updatePaperAppearance()
         if selectionGesture != nil,
            configuredTool != tool || itemView.selection != store.selection {
@@ -763,7 +810,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         if currentEditor.frame != box.frame { currentEditor.frame = box.frame }
         let font = UIFont.systemFont(ofSize: box.fontSize)
         if currentEditor.font != font { currentEditor.font = font }
-        currentEditor.backgroundColor = backgroundView.image != nil ? .white : .systemBackground
+        currentEditor.backgroundColor = store.page.importedBackground != nil || backgroundView.image != nil ? .white : .systemBackground
         let color = box.color.uiColor
         if currentEditor.textColor != color { currentEditor.textColor = color }
         if !currentEditor.isFirstResponder, currentEditor.text != box.text {

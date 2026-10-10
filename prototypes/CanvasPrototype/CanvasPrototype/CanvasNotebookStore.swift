@@ -4,7 +4,7 @@ import PencilKit
 import UIKit
 
 @MainActor
-final class CanvasNotebookStore: ObservableObject {
+final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
     @Published private(set) var notebooks: [CanvasNotebook] = []
     @Published private(set) var folders: [CanvasFolder] = []
     @Published private(set) var isLoading = true
@@ -135,6 +135,129 @@ final class CanvasNotebookStore: ObservableObject {
             errorMessage = "The notebook could not be created. Saved files are preserved."
             return nil
         }
+    }
+
+    var importAdapter: CanvasImportAdapter {
+        CanvasImportAdapter(stagingRoot: FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalNotesImports", isDirectory: true))
+    }
+
+    func existingPageCount(for destination: CanvasImportDestination) throws -> Int {
+        guard storageIsValid, !isLoading else { throw CanvasImportError.ioFailure }
+        switch destination {
+        case .newNotebook(let folderID):
+            guard containsFolder(folderID) else { throw CanvasImportError.ioFailure }
+            return 0
+        case .insertPDF(let id, let anchor):
+            guard let notebook = notebooks.first(where: { $0.id == id }), notebook.pageIDs.contains(anchor) else {
+                throw CanvasImportError.ioFailure
+            }
+            return notebook.pageIDs.count
+        }
+    }
+
+    /// The FIFO permit covers all page/source writes and the atomic index commit.
+    func publishImport(_ prepared: CanvasPreparedImport, to destination: CanvasImportDestination,
+                       title: String) async throws -> CanvasImportPublication {
+        guard storageIsValid, !isLoading, let directoryURL else { throw CanvasImportError.ioFailure }
+        await acquireIndexMutation()
+        defer { releaseIndexMutation() }
+        try Task.checkCancellation()
+        var notebook: CanvasNotebook
+        let anchor: UUID?
+        let existingIndex: Int?
+        switch destination {
+        case .newNotebook(let folderID):
+            guard containsFolder(folderID) else { throw CanvasImportError.ioFailure }
+            let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { throw CanvasImportError.ioFailure }
+            notebook = CanvasNotebook(id: UUID(), title: name, folderID: folderID, pageIDs: [],
+                                      createdAt: Date(), coverRevision: 0)
+            anchor = nil
+            existingIndex = nil
+        case .insertPDF(let id, let pageID):
+            guard prepared.pages.allSatisfy({ $0.kind == .pdf }),
+                  let index = notebooks.firstIndex(where: { $0.id == id }) else { throw CanvasImportError.ioFailure }
+            notebook = notebooks[index]
+            anchor = pageID
+            existingIndex = index
+        }
+        let plan = try CanvasImportInsertionPlan.make(prepared: prepared, currentPageIDs: notebook.pageIDs, after: anchor)
+        notebook.pageIDs = plan.orderedPageIDs
+        var publishedSource = prepared.staged.source
+        publishedSource.displayAssetNames = plan.newPages.filter { $0.background.kind == .pdf }.map { $0.background.displayAssetName }
+        notebook.sources.append(publishedSource)
+        var updated = notebooks
+        if let existingIndex { updated[existingIndex] = notebook } else { updated.append(notebook) }
+        let library = CanvasNotebookLibrary(notebooks: updated, folders: folders, revision: libraryRevision + 1)
+        let allowMissing = !hasPublishedIndex
+        let notebookID = notebook.id
+        let sourceRecord = publishedSource
+        let pages = plan.newPages.map { entry in
+            CanvasPageData(inkDrawingData: PKDrawing().dataRepresentation(), textBoxes: [], shapes: [], scratchEraseEnabled: true,
+                           importedBackground: entry.background)
+        }
+        let cancellation = CanvasImportCancellation()
+        let result: Result<Void, Error> = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+            storageQueue.async {
+                do {
+                    try cancellation.check()
+                    let directory = Self.notebookURL(notebookID, in: directoryURL)
+                    try CanvasImportedContent.createDirectory(directory, in: directoryURL)
+                    let sourceDirectory = CanvasImportedContent.sourceDirectory(notebookDirectory: directory)
+                    try CanvasImportedContent.createDirectory(sourceDirectory, in: directory)
+                    // Flat generated names permit exact resource cleanup for Trash.
+                    for name in [sourceRecord.storedName] + sourceRecord.displayAssetNames {
+                        try cancellation.check()
+                        let destination = sourceDirectory.appendingPathComponent(name)
+                        guard !FileManager.default.fileExists(atPath: destination.path) else { throw CanvasImportError.ioFailure }
+                        try FileManager.default.copyItem(at: prepared.staged.directoryURL.appendingPathComponent(name), to: destination)
+                    }
+                    try CanvasImportedContent.validateSource(sourceRecord, notebookDirectory: directory)
+                    try JSONEncoder().encode(sourceRecord).write(to: sourceDirectory.appendingPathComponent("\(sourceRecord.id.uuidString).json"), options: .atomic)
+                    for (entry, page) in zip(plan.newPages, pages) {
+                        try cancellation.check()
+                        try CanvasImportedContent.validateBackground(entry.background, notebookDirectory: directory)
+                        let url = Self.pageURL(entry.id, notebookID: notebookID, in: directoryURL)
+                        guard !FileManager.default.fileExists(atPath: url.path) else { throw CanvasImportError.ioFailure }
+                        try JSONEncoder().encode(page).write(to: url, options: .atomic)
+                        _ = try CanvasPageStore.decodeAndValidatePage(from: Data(contentsOf: url))
+                    }
+                    try cancellation.check()
+                    try Self.writeLibrary(library, in: directoryURL, allowMissingIndex: allowMissing)
+                    continuation.resume(returning: .success(()))
+                } catch { continuation.resume(returning: .failure(error)) }
+            }
+            }
+        } onCancel: { cancellation.cancel() }
+        try result.get()
+        // No cancellation check after this commit point. A published import is success.
+        libraryRevision = library.revision
+        hasPublishedIndex = true
+        if let existingIndex {
+            notebooks[existingIndex].pageIDs = notebook.pageIDs
+            notebooks[existingIndex].sources = notebook.sources
+        } else { notebooks.append(notebook) }
+        if pageStores[notebookID] != nil {
+            for (entry, page) in zip(plan.newPages, pages) {
+                pageStores[notebookID]?[entry.id] = CanvasPageStore(page: page,
+                    fileURL: Self.pageURL(entry.id, notebookID: notebookID, in: directoryURL), saveQueue: storageQueue)
+            }
+        }
+        errorMessage = nil
+        return CanvasImportPublication(notebookID: notebookID, importedPageCount: plan.newPages.count,
+                                       omittedPageCount: plan.omittedPageCount)
+    }
+
+    func importedBackgroundBytes(notebookID: UUID, page: CanvasPageData) async throws -> CanvasImmutableBackground? {
+        guard let background = page.importedBackground else { return nil }
+        guard let directoryURL,
+              let source = notebooks.first(where: { $0.id == notebookID })?.sources.first(where: { $0.id == background.sourceID }) else {
+            throw CanvasImportError.ioFailure
+        }
+        return try await CanvasImportedRenderCache.shared.immutableBytes(background, source: source,
+            notebookDirectory: Self.notebookURL(notebookID, in: directoryURL))
     }
 
     func containsFolder(_ id: CanvasFolderID) -> Bool {
@@ -354,14 +477,39 @@ final class CanvasNotebookStore: ObservableObject {
     func openNotebook(_ id: UUID) async -> [CanvasPageStore]? {
         guard let notebook = notebooks.first(where: { $0.id == id }), let directoryURL else { return nil }
         if let cached = pageStores[id] {
+            let backgrounds = notebook.pageIDs.compactMap { cached[$0]?.page.importedBackground }
+            let valid: Bool = await withCheckedContinuation { continuation in
+                storageQueue.async {
+                    do {
+                        let directory = Self.notebookURL(id, in: directoryURL)
+                        for source in notebook.sources { try CanvasImportedContent.validateSource(source, notebookDirectory: directory) }
+                        for background in backgrounds {
+                            guard notebook.sources.contains(where: { $0.id == background.sourceID }) else { throw CanvasImportError.ioFailure }
+                            try CanvasImportedContent.validateBackground(background, notebookDirectory: directory)
+                        }
+                        continuation.resume(returning: true)
+                    } catch { continuation.resume(returning: false) }
+                }
+            }
+            guard valid, notebooks.first(where: { $0.id == id })?.pageIDs == notebook.pageIDs else {
+                errorMessage = "The notebook source is missing, invalid, or changed. Saved content is preserved."
+                return nil
+            }
             return notebook.pageIDs.compactMap { cached[$0] }
         }
         let result: Result<[CanvasPageData], Error> = await withCheckedContinuation { continuation in
             storageQueue.async {
                 do {
+                    let directory = Self.notebookURL(id, in: directoryURL)
+                    for source in notebook.sources { try CanvasImportedContent.validateSource(source, notebookDirectory: directory) }
                     let pages = try notebook.pageIDs.map { pageID in
-                        try CanvasPageStore.decodeAndValidatePage(from: Data(contentsOf:
+                        let page = try CanvasPageStore.decodeAndValidatePage(from: Data(contentsOf:
                             Self.pageURL(pageID, notebookID: id, in: directoryURL)))
+                        if let background = page.importedBackground {
+                            guard notebook.sources.contains(where: { $0.id == background.sourceID }) else { throw CanvasImportError.ioFailure }
+                            try CanvasImportedContent.validateBackground(background, notebookDirectory: directory)
+                        }
+                        return page
                     }
                     continuation.resume(returning: .success(pages))
                 } catch {
@@ -443,7 +591,7 @@ final class CanvasNotebookStore: ObservableObject {
         if let previous = coverPages[notebookID],
            previous.inkDrawingData == page.inkDrawingData,
            previous.textBoxes == page.textBoxes, previous.shapes == page.shapes,
-           previous.paper == page.paper { return }
+           previous.paper == page.paper, previous.importedBackground == page.importedBackground { return }
         coverPages[notebookID] = page
         let request = (coverRequests[notebookID] ?? 0) + 1
         coverRequests[notebookID] = request
@@ -453,7 +601,7 @@ final class CanvasNotebookStore: ObservableObject {
             guard let self, self.coverRequests[notebookID] == request else { return }
             self.coverQueue.async { [weak self] in
                 do {
-                    let data = try Self.coverData(for: page)
+                    let data = try Self.coverData(for: page, notebookDirectory: Self.notebookURL(notebookID, in: directoryURL))
                     try data.write(to: coverURL, options: .atomic)
                     Task { @MainActor [weak self] in
                         guard let self, let index = self.notebooks.firstIndex(where: { $0.id == notebookID }) else { return }
@@ -499,7 +647,8 @@ final class CanvasNotebookStore: ObservableObject {
     }
 
     /// Rendering is queued after a completed save, never on each Pencil point.
-    nonisolated private static func coverData(for page: CanvasPageData) throws -> Data {
+    nonisolated private static func coverData(for page: CanvasPageData, notebookDirectory: URL) throws -> Data {
+        let background = try page.importedBackground.map { try CanvasImportedContent.render($0, notebookDirectory: notebookDirectory) }
         let pageSize = CanvasPageGeometry.size
         let scale: CGFloat = 180 / pageSize.width
         let format = UIGraphicsImageRendererFormat()
@@ -510,7 +659,8 @@ final class CanvasNotebookStore: ObservableObject {
             context.setFillColor(UIColor.white.cgColor)
             context.fill(CGRect(origin: .zero, size: CGSize(width: 180, height: pageSize.height * scale)))
             context.scaleBy(x: scale, y: scale)
-            if page.paper != .blank {
+            if let background { background.draw(in: CGRect(origin: .zero, size: pageSize)) }
+            if background == nil && page.paper != .blank {
                 context.setStrokeColor(UIColor(white: 0.84, alpha: 1).cgColor)
                 context.setLineWidth(0.5)
                 let spacing: CGFloat = page.paper == .lined ? 28 : 24

@@ -45,6 +45,7 @@ final class CanvasPageStore: ObservableObject {
 
 
     var onFlushCanvasDrawing: (() -> Void)?
+    var notebookDirectoryURL: URL? { showsPrototypeBackground ? nil : fileURL?.deletingLastPathComponent() }
     let showsPrototypeBackground: Bool
 
     private let toolSettings = CanvasToolSettings.shared
@@ -154,7 +155,7 @@ final class CanvasPageStore: ObservableObject {
             if page.inkDrawingData == snapshot.inkDrawingData,
                page.textBoxes == snapshot.textBoxes, page.shapes == snapshot.shapes,
                page.scratchEraseEnabled == snapshot.scratchEraseEnabled,
-               page.paper == snapshot.paper { return true }
+               page.paper == snapshot.paper, page.importedBackground == snapshot.importedBackground { return true }
         }
     }
 
@@ -789,6 +790,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     nonisolated private static func validatePage(_ page: CanvasPageData) throws {
+        try page.importedBackground?.validate()
         let objectIDs = page.textBoxes.map(\.id) + page.shapes.map(\.id)
         guard Set(objectIDs).count == objectIDs.count,
               page.textBoxes.allSatisfy({ box in

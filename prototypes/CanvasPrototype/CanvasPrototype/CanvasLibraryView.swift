@@ -8,6 +8,8 @@ struct CanvasLibraryView: View {
     @State private var openedNotebook: CanvasNotebook?
     @State private var openedPages: [CanvasPageStore] = []
     @State private var showsCreate = false
+    @State private var importDestination: CanvasLibraryImportRequest?
+    @State private var importMessage: String?
     @State private var isOpening = false
     @State private var selectedFolderID: CanvasFolderID? = .unfiled
     @State private var showsCreateFolder = false
@@ -32,10 +34,25 @@ struct CanvasLibraryView: View {
         }
         .tint(.blue)
         .preferredColorScheme((CanvasAppearance(rawValue: appearanceValue) ?? .light).colorScheme)
+        .alert("Import complete", isPresented: Binding(
+            get: { importMessage != nil }, set: { if !$0 { importMessage = nil } }
+        )) {
+            Button("OK") { importMessage = nil }
+        } message: { Text(importMessage ?? "") }
         .sheet(isPresented: $showsCreate) {
             CanvasCreateNotebookView(store: store, folderID: selectedFolderID ?? .unfiled) { notebook in
                 showsCreate = false
                 Task { await open(notebook) }
+            }
+        }
+        .sheet(item: $importDestination) { request in
+            CanvasImportFilesView(destination: .newNotebook(folderID: request.folderID),
+                                  adapter: store.importAdapter, store: store) { publication in
+                importDestination = nil
+                importMessage = publication.message
+                if let notebook = store.notebooks.first(where: { $0.id == publication.notebookID }) {
+                    Task { await open(notebook) }
+                }
             }
         }
         .sheet(isPresented: $showsCreateFolder) {
@@ -121,10 +138,16 @@ struct CanvasLibraryView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 144, maximum: 184), spacing: 24)],
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 144, maximum: 184), spacing: 24, alignment: .top)],
                               alignment: .leading, spacing: 28) {
-                        CanvasCreateNotebookCard { showsCreate = true }
-                            .disabled(!store.canCreateNotebook || isOpening)
+                        Menu {
+                            Button("Create blank notebook") { showsCreate = true }
+                            Button("Import from Files") { startLibraryImport() }
+                        } label: { CanvasCreateNotebookCard() }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Create or Import File")
+                        .accessibilityHint("Choose a blank notebook or import from Files")
+                        .disabled(!store.canCreateNotebook || isOpening)
                         ForEach(visibleNotebooks) { notebook in
                             VStack(spacing: 0) {
                                 Button {
@@ -135,18 +158,13 @@ struct CanvasLibraryView: View {
                                 .buttonStyle(.plain)
                                 .disabled(isOpening)
                                 .accessibilityLabel("\(notebook.title), \(notebook.pageIDs.count) pages")
-                                .accessibilityHint("Open this notebook")
+                                .accessibilityHint("Open this notebook. Touch and hold for notebook actions.")
                                 .contextMenu {
-                                    moveMenu(for: notebook)
+                                    Menu("Move to folder") {
+                                        moveMenu(for: notebook)
+                                    }
+                                    .disabled(isMoving || isOpening)
                                 }
-                                Menu {
-                                    moveMenu(for: notebook)
-                                } label: {
-                                    Text("Move \(notebook.title)").font(.caption)
-                                        .frame(minHeight: 44)
-                                }
-                                .disabled(isMoving || isOpening)
-                                .accessibilityLabel("Move \(notebook.title) to folder")
                             }
                         }
                     }
@@ -154,6 +172,10 @@ struct CanvasLibraryView: View {
                 }
             }
         }
+    }
+
+    private func startLibraryImport() {
+        importDestination = CanvasLibraryImportRequest(folderID: selectedFolderID ?? .unfiled)
     }
 
     private func moveMenu(for notebook: CanvasNotebook) -> some View {
@@ -188,10 +210,7 @@ struct CanvasLibraryView: View {
 }
 
 private struct CanvasCreateNotebookCard: View {
-    let create: () -> Void
-
     var body: some View {
-        Button(action: create) {
             VStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(Color(uiColor: .secondarySystemBackground))
@@ -205,13 +224,18 @@ private struct CanvasCreateNotebookCard: View {
                             .background(.blue, in: Circle())
                     }
                     .aspectRatio(0.72, contentMode: .fit)
-                Text("Create").font(.headline).frame(minHeight: 44, alignment: .top)
-                Text("7 blank pages").font(.caption).foregroundStyle(.secondary)
+                Text("Create or Import File").font(.headline).lineLimit(2).multilineTextAlignment(.center)
+                    .frame(minHeight: 44, alignment: .top)
+                Text("Blank notebook, PDF, or image").font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).frame(minHeight: 32, alignment: .top)
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Create notebook, seven blank pages")
+        .accessibilityLabel("Create or Import File")
     }
+}
+
+private struct CanvasLibraryImportRequest: Identifiable {
+    let id = UUID()
+    let folderID: CanvasFolderID
 }

@@ -7,6 +7,8 @@ struct CanvasNotebookView: View {
     @ObservedObject var library: CanvasNotebookStore
     let onClose: () -> Void
     @State private var pageIndex = 0
+    @State private var importRequest: CanvasNotebookImportRequest?
+    @State private var importMessage: String?
     @State private var isNavigating = false
     @State private var isAddingPage = false
     @State private var isChangingPaper = false
@@ -55,6 +57,7 @@ struct CanvasNotebookView: View {
             }
             .padding(.horizontal, 12)
             .background(Color(uiColor: .secondarySystemBackground))
+            if let importMessage { Text(importMessage).font(.callout).padding(12) }
             if let navigationError {
                 Text(navigationError).font(.callout).foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,6 +80,7 @@ struct CanvasNotebookView: View {
                     onVisiblePageChange: setVisiblePage,
                     onZoomChange: { zoomPercent = $0 }, onAddPage: addPage,
                     onAddPageAfterCurrent: addPageAfterCurrent,
+                    onImportPDF: startPDFImport,
                     onDefaultPaperChange: setDefaultPaper,
                     onAppearanceChange: { appearanceValue = $0.rawValue }
                 )
@@ -84,6 +88,13 @@ struct CanvasNotebookView: View {
             } else {
                 Text("The notebook pages are unavailable. Saved files are preserved.")
                     .padding()
+            }
+        }
+        .sheet(item: $importRequest) { request in
+            CanvasImportFilesView(destination: .insertPDF(notebookID: notebook.id, afterPageID: request.pageID),
+                                  adapter: library.importAdapter, store: library) { publication in
+                importMessage = publication.message
+                importRequest = nil
             }
         }
         .preferredColorScheme(appearance.colorScheme)
@@ -97,6 +108,14 @@ struct CanvasNotebookView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
+    }
+
+    private func startPDFImport() {
+        let entries = orderedPages
+        guard entries.indices.contains(pageIndex), !isNavigating, !isAddingPage,
+              currentNotebook.pageIDs.count < CanvasNotebook.maximumPageCount else { return }
+        // Capture the stable page ID before the Files sheet opens.
+        importRequest = CanvasNotebookImportRequest(pageID: entries[pageIndex].id)
     }
 
     private func moveNotebook(to folderID: CanvasFolderID) {
@@ -186,4 +205,9 @@ struct CanvasNotebookView: View {
             isChangingPaper = false
         }
     }
+}
+
+private struct CanvasNotebookImportRequest: Identifiable {
+    let id = UUID()
+    let pageID: UUID
 }
