@@ -89,12 +89,18 @@ final class NotebookPDFExporter: Sendable {
     private let queue = DispatchQueue(label: "PersonalNotes.pdf-export", qos: .utility)
 
     func export(_ snapshot: ExportNotebookSnapshot) async throws -> ExportPDFArtifact {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                do { continuation.resume(returning: try Self.render(snapshot)) }
-                catch { continuation.resume(throwing: error) }
+        let cancellation = CanvasImportCancellation()
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    do {
+                        try cancellation.check()
+                        continuation.resume(returning: try Self.render(snapshot, cancellation: cancellation))
+                    } catch { continuation.resume(throwing: error) }
+                }
             }
-        }
+        } onCancel: { cancellation.cancel() }
     }
 
     /// File removal uses the same utility queue as PDF output.
@@ -109,7 +115,8 @@ final class NotebookPDFExporter: Sendable {
         }
     }
 
-    private static func render(_ snapshot: ExportNotebookSnapshot) throws -> ExportPDFArtifact {
+    private static func render(_ snapshot: ExportNotebookSnapshot, cancellation: CanvasImportCancellation) throws -> ExportPDFArtifact {
+        try cancellation.check()
         guard !snapshot.pages.isEmpty else { throw ExportPDFError.emptyNotebook }
         let id = UUID()
         let directory = FileManager.default.temporaryDirectory
@@ -123,6 +130,7 @@ final class NotebookPDFExporter: Sendable {
             }
             do {
                 for page in snapshot.pages {
+                    try cancellation.check()
                     try autoreleasepool {
                         try validate(page)
                         var bounds = CGRect(origin: .zero, size: page.size)
@@ -144,7 +152,7 @@ final class NotebookPDFExporter: Sendable {
                         UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
                             drawingResult = Result {
                                 try drawBackground(page.background, bounds: bounds, context: context)
-                                try drawInk(page.ink.decoded(), bounds: bounds)
+                                try drawInk(page.ink.decoded(), bounds: bounds, cancellation: cancellation)
                                 for shape in page.legacyRectangles {
                                     context.setStrokeColor(shape.color.color.cgColor)
                                     context.setLineWidth(shape.width)
@@ -161,11 +169,13 @@ final class NotebookPDFExporter: Sendable {
                         try drawingResult.get()
                     }
                 }
+                try cancellation.check()
                 context.closePDF()
             } catch {
                 context.closePDF()
                 throw error
             }
+            try cancellation.check()
             guard let document = CGPDFDocument(url as CFURL),
                   document.numberOfPages == snapshot.pages.count else {
                 throw ExportPDFError.incompletePDF
@@ -224,12 +234,13 @@ final class NotebookPDFExporter: Sendable {
         }
     }
 
-    private static func drawInk(_ drawing: PKDrawing, bounds: CGRect) throws {
+    private static func drawInk(_ drawing: PKDrawing, bounds: CGRect, cancellation: CanvasImportCancellation) throws {
         guard !drawing.strokes.isEmpty else { return }
         // 216 dpi ink tiles bound transient image memory even on large source pages.
         // Paper, text, and original PDF content remain vector content.
         for y in stride(from: CGFloat.zero, to: bounds.height, by: 512) {
             for x in stride(from: CGFloat.zero, to: bounds.width, by: 512) {
+                try cancellation.check()
                 let tile = CGRect(x: x, y: y, width: min(512, bounds.width - x),
                                   height: min(512, bounds.height - y))
                 guard drawing.bounds.intersects(tile) else { continue }
