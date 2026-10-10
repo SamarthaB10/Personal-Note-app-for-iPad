@@ -1,4 +1,5 @@
 import SwiftUI
+import PencilKit
 
 /// The library keeps stable page stores. Scrolling changes only the active controls.
 struct CanvasNotebookView: View {
@@ -39,6 +40,8 @@ struct CanvasNotebookView: View {
                 Text(library.folderName(for: currentNotebook.folderID)).foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
+                NotebookExportToFilesControl(captureSnapshot: captureExportSnapshot)
+                    .disabled(isNavigating || importRequest != nil)
                 Menu {
                     Button("Unfiled") { moveNotebook(to: .unfiled) }
                         .disabled(currentNotebook.folderID == .unfiled)
@@ -108,6 +111,54 @@ struct CanvasNotebookView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
+    }
+
+    /// Freeze page order, appearance, text, and live ink before asynchronous source reads.
+    @MainActor
+    private func captureExportSnapshot(_ scope: NotebookExportScope) async throws -> ExportNotebookSnapshot {
+        let snapshotNotebook = currentNotebook
+        let entries = orderedPages
+        guard !isNavigating, entries.indices.contains(pageIndex) else {
+            throw CanvasExportSnapshotAdapter.SnapshotError.missingPage
+        }
+        let currentID = entries[pageIndex].id
+        let ids = scope == .currentPage ? [currentID] : snapshotNotebook.pageIDs
+        let dark = appearance == .dark
+        var captured: [UUID: CanvasExportPageCapture] = [:]
+        for id in ids {
+            guard let store = entries.first(where: { $0.id == id })?.store else {
+                throw CanvasExportSnapshotAdapter.SnapshotError.missingPage
+            }
+            captured[id] = try store.prepareForExport()
+        }
+        let sourceCache = CanvasExportSourceCache()
+        var backgrounds: [UUID: ExportBackground] = [:]
+        for id in ids {
+            try Task.checkCancellation()
+            guard let value = captured[id] else { throw CanvasExportSnapshotAdapter.SnapshotError.missingPage }
+            if let background = try await library.importedBackgroundBytes(
+                notebookID: snapshotNotebook.id, page: value.page, sourceCache: sourceCache) {
+                if background.isPDF {
+                    backgrounds[id] = .pdf(data: background.displayBytes, pageNumber: 1,
+                        box: .mediaBox, frame: CGRect(origin: .zero, size: CanvasPageGeometry.size))
+                } else {
+                    guard let bytes = background.boundedImageBytes else { throw ExportPDFError.invalidBackground }
+                    backgrounds[id] = .image(data: bytes, frame: background.frame)
+                }
+            } else {
+                backgrounds[id] = CanvasExportSnapshotAdapter.paperBackground(value.page, dark: dark)
+            }
+        }
+        try Task.checkCancellation()
+        let live = captured.compactMapValues { value -> PKDrawing? in
+            if case let .drawing(drawing) = value.ink { return drawing }
+            return nil
+        }
+        return try CanvasExportSnapshotAdapter.capture(notebook: snapshotNotebook,
+            currentPageID: currentID, scope: scope, pages: captured.mapValues(\.page), liveDrawings: live) { id, _ in
+                guard let background = backgrounds[id] else { throw ExportPDFError.invalidBackground }
+                return background
+            }
     }
 
     private func startPDFImport() {

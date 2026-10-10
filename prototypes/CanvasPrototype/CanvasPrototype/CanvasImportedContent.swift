@@ -19,6 +19,11 @@ struct CanvasImmutableBackground: Sendable {
     let boundedImageBytes: Data?
 }
 
+/// Values belong to one export and are accessed only on the render utility queue.
+final class CanvasExportSourceCache: @unchecked Sendable {
+    fileprivate var bytes: [UUID: Data] = [:]
+}
+
 enum CanvasImportedContent {
     /// Reject links at each app-owned resource boundary, without changing invalid entries.
     static func requireDirectory(_ url: URL) throws {
@@ -168,13 +173,19 @@ final class CanvasImportedRenderCache: @unchecked Sendable {
         } onCancel: { cancellation.cancel() }
     }
 
-    func immutableBytes(_ background: CanvasImportedBackground, source: CanvasImportSource, notebookDirectory: URL) async throws -> CanvasImmutableBackground {
+    func immutableBytes(_ background: CanvasImportedBackground, source: CanvasImportSource, notebookDirectory: URL, sourceCache: CanvasExportSourceCache? = nil) async throws -> CanvasImmutableBackground {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
-                    try CanvasImportedContent.validateSource(source, notebookDirectory: notebookDirectory)
+                    let original: Data
+                    if let cached = sourceCache?.bytes[source.id] {
+                        original = cached
+                    } else {
+                        try CanvasImportedContent.validateSource(source, notebookDirectory: notebookDirectory)
+                        original = try Data(contentsOf: CanvasImportedContent.sourceURL(background, notebookDirectory: notebookDirectory))
+                        sourceCache?.bytes[source.id] = original
+                    }
                     try CanvasImportedContent.validateBackground(background, notebookDirectory: notebookDirectory)
-                    let original = try Data(contentsOf: CanvasImportedContent.sourceURL(background, notebookDirectory: notebookDirectory))
                     let display = background.kind == .pdf ? try Data(contentsOf: CanvasImportedContent.displayURL(background, notebookDirectory: notebookDirectory)) : original
                     var boundedImage: Data?
                     if background.kind == .image {

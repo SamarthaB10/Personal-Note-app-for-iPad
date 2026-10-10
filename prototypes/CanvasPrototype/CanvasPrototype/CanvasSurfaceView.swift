@@ -182,6 +182,13 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         scratchGesture.onScratchCancelled = { [weak self] in self?.cancelScratchErase() }
         pageView.addGestureRecognizer(scratchGesture)
 
+        store.onPrepareForExport = { [weak self] in
+            guard let self, !self.isPreparedForRemoval else {
+                throw CanvasExportSnapshotAdapter.SnapshotError.missingPage
+            }
+            return try self.prepareForExport()
+        }
+
         store.onFlushCanvasDrawing = { [weak self] in
             guard let self, !self.isPreparedForRemoval else { return }
             self.ownsFlushCallback = true
@@ -222,7 +229,10 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         commitPendingDrawing(allowDuringPencil: true)
         ownsFlushCallback = false
         store.onFlushCanvasDrawing?()
-        if ownsFlushCallback { store.onFlushCanvasDrawing = nil }
+        if ownsFlushCallback {
+            store.onFlushCanvasDrawing = nil
+            store.onPrepareForExport = nil
+        }
         backgroundTask?.cancel()
         backgroundTask = nil
         isPreparedForRemoval = true
@@ -232,6 +242,25 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         scratchGesture.isEnabled = false
         pendingDrawingSave?.cancel()
         pendingDrawingSave = nil
+    }
+
+    /// Do not commit a movement preview or serialize ink while taking this value copy.
+    private func prepareForExport() throws -> CanvasExportPageCapture {
+        let drawingState = canvasView.drawingGestureRecognizer.state
+        guard !isUsingPencil, !scratchIsRecognized,
+              activePathInput == nil, selectionGesture == nil,
+              drawingState != .began, drawingState != .changed else {
+            throw CanvasExportSnapshotAdapter.SnapshotError.activeInput
+        }
+        var page = store.page
+        if let editor, let editorBoxID,
+           let index = page.textBoxes.firstIndex(where: { $0.id == editorBoxID }) {
+            page.textBoxes[index].text = editor.text ?? ""
+        }
+        // A store change may still be waiting for the next UIKit update.
+        let ink: ExportInk = hasPendingInkChanges || lastAppliedDrawingRevision == store.drawingRevision
+            ? .drawing(canvasView.drawing) : .data(page.inkDrawingData)
+        return CanvasExportPageCapture(page: page, ink: ink)
     }
 
     /// Finger paths use page tools. The notebook keeps two-finger pan and pinch available.

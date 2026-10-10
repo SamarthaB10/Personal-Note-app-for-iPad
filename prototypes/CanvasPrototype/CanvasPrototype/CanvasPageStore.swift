@@ -44,6 +44,15 @@ final class CanvasPageStore: ObservableObject {
     var textBoxChoiceStartsEditing: Bool { textBoxChoiceIntent == .edit }
 
 
+    var onPrepareForExport: (() throws -> CanvasExportPageCapture)?
+
+    /// A surface copies pending ink and current text without invoking the save path.
+    func prepareForExport() throws -> CanvasExportPageCapture {
+        if let onPrepareForExport { return try onPrepareForExport() }
+        guard selectionTransform == nil else { throw CanvasExportSnapshotAdapter.SnapshotError.activeInput }
+        return CanvasExportPageCapture(page: page, ink: .data(page.inkDrawingData))
+    }
+
     var onFlushCanvasDrawing: (() -> Void)?
     var notebookDirectoryURL: URL? { showsPrototypeBackground ? nil : fileURL?.deletingLastPathComponent() }
     let showsPrototypeBackground: Bool

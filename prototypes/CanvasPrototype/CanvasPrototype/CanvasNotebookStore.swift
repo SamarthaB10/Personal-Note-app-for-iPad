@@ -250,14 +250,14 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                                        omittedPageCount: plan.omittedPageCount)
     }
 
-    func importedBackgroundBytes(notebookID: UUID, page: CanvasPageData) async throws -> CanvasImmutableBackground? {
+    func importedBackgroundBytes(notebookID: UUID, page: CanvasPageData, sourceCache: CanvasExportSourceCache? = nil) async throws -> CanvasImmutableBackground? {
         guard let background = page.importedBackground else { return nil }
         guard let directoryURL,
               let source = notebooks.first(where: { $0.id == notebookID })?.sources.first(where: { $0.id == background.sourceID }) else {
             throw CanvasImportError.ioFailure
         }
         return try await CanvasImportedRenderCache.shared.immutableBytes(background, source: source,
-            notebookDirectory: Self.notebookURL(notebookID, in: directoryURL))
+            notebookDirectory: Self.notebookURL(notebookID, in: directoryURL), sourceCache: sourceCache)
     }
 
     func containsFolder(_ id: CanvasFolderID) -> Bool {
