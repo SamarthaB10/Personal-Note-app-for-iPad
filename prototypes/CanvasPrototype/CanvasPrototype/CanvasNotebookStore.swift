@@ -6,6 +6,7 @@ import UIKit
 @MainActor
 final class CanvasNotebookStore: ObservableObject {
     @Published private(set) var notebooks: [CanvasNotebook] = []
+    @Published private(set) var folders: [CanvasFolder] = []
     @Published private(set) var isLoading = true
     @Published private(set) var isCreating = false
     @Published private(set) var errorMessage: String?
@@ -20,6 +21,8 @@ final class CanvasNotebookStore: ObservableObject {
     private var lifecycleSaveTask: Task<Void, Never>?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var storageIsValid = false
+    private var libraryRevision = 0
+    private var hasPublishedIndex = false
     private var indexMutationIsActive = false
     private var indexMutationWaiters: [CheckedContinuation<Void, Never>] = []
     private var pageStores: [UUID: [UUID: CanvasPageStore]] = [:]
@@ -37,7 +40,7 @@ final class CanvasNotebookStore: ObservableObject {
             errorMessage = "Local storage is unavailable."
             return
         }
-        let result: Result<[CanvasNotebook], Error> = await withCheckedContinuation { continuation in
+        let result: Result<CanvasNotebookLibrary, Error> = await withCheckedContinuation { continuation in
             storageQueue.async {
                 do {
                     try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
@@ -58,7 +61,7 @@ final class CanvasNotebookStore: ObservableObject {
                             library.notebooks[index].coverRevision = max(1, library.notebooks[index].coverRevision)
                         }
                     }
-                    continuation.resume(returning: .success(library.notebooks))
+                    continuation.resume(returning: .success(library))
                 } catch {
                     continuation.resume(returning: .failure(error))
                 }
@@ -66,15 +69,18 @@ final class CanvasNotebookStore: ObservableObject {
         }
         isLoading = false
         switch result {
-        case .success(let savedNotebooks):
-            notebooks = savedNotebooks
+        case .success(let library):
+            notebooks = library.notebooks
+            folders = library.folders
+            libraryRevision = library.revision
+            hasPublishedIndex = FileManager.default.fileExists(atPath: Self.indexURL(in: directoryURL).path)
             storageIsValid = true
         case .failure:
             errorMessage = "The notebook library could not be opened. Saved files are preserved."
         }
     }
 
-    func createNotebook(title: String) async -> CanvasNotebook? {
+    func createNotebook(title: String, folderID: CanvasFolderID = .unfiled) async -> CanvasNotebook? {
         guard canCreateNotebook, let directoryURL else { return nil }
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
@@ -87,10 +93,14 @@ final class CanvasNotebookStore: ObservableObject {
             releaseIndexMutation()
             isCreating = false
         }
-        let notebook = CanvasNotebook(id: UUID(), title: title, folderID: .unfiled,
+        guard containsFolder(folderID) else {
+            errorMessage = "The folder could not be found. Saved files are preserved."
+            return nil
+        }
+        let notebook = CanvasNotebook(id: UUID(), title: title, folderID: folderID,
                                       pageIDs: (0..<7).map { _ in UUID() }, createdAt: Date(), coverRevision: 0)
-        let library = CanvasNotebookLibrary(notebooks: notebooks + [notebook])
-        let canCreateIndex = notebooks.isEmpty
+        let library = CanvasNotebookLibrary(notebooks: notebooks + [notebook], folders: folders, revision: libraryRevision + 1)
+        let canCreateIndex = !hasPublishedIndex
         let result: Result<Void, Error> = await withCheckedContinuation { continuation in
             storageQueue.async {
                 do {
@@ -116,6 +126,8 @@ final class CanvasNotebookStore: ObservableObject {
         }
         switch result {
         case .success:
+            libraryRevision = library.revision
+            hasPublishedIndex = true
             notebooks.append(notebook)
             errorMessage = nil
             return notebook
@@ -123,6 +135,92 @@ final class CanvasNotebookStore: ObservableObject {
             errorMessage = "The notebook could not be created. Saved files are preserved."
             return nil
         }
+    }
+
+    func containsFolder(_ id: CanvasFolderID) -> Bool {
+        id == .unfiled || folders.contains { $0.folderID == id }
+    }
+
+    func folderName(for id: CanvasFolderID) -> String {
+        id == .unfiled ? "Unfiled" : folders.first { $0.folderID == id }?.name ?? "Folder unavailable"
+    }
+
+    func notebooks(in folderID: CanvasFolderID) -> [CanvasNotebook] {
+        notebooks.filter { $0.folderID == folderID }
+    }
+
+    /// Validate both the form and queued request against the current folder names.
+    func folderNameError(_ proposedName: String) -> String? {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return "Enter a folder name." }
+        if name.contains(where: { $0.isNewline }) { return "Use one line for the folder name." }
+        if name.compare("Unfiled", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+            return "Unfiled is the built-in folder. Use a different name."
+        }
+        if folders.contains(where: {
+            $0.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }) { return "A folder with this name already exists." }
+        return nil
+    }
+
+    func createFolder(name: String) async -> CanvasFolder? {
+        guard storageIsValid, !isLoading else { return nil }
+        await acquireIndexMutation()
+        defer { releaseIndexMutation() }
+        if let error = folderNameError(name) {
+            errorMessage = error
+            return nil
+        }
+        let folder = CanvasFolder(id: UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines))
+        let library = CanvasNotebookLibrary(notebooks: notebooks, folders: folders + [folder],
+                                            revision: libraryRevision + 1)
+        guard await saveMembership(library) else { return nil }
+        folders.append(folder)
+        return folder
+    }
+
+    /// Change only membership. Notebook directories and editable pages stay in place.
+    func moveNotebook(_ notebookID: UUID, to folderID: CanvasFolderID) async -> Bool {
+        guard storageIsValid, !isLoading else { return false }
+        await acquireIndexMutation()
+        defer { releaseIndexMutation() }
+        guard containsFolder(folderID), let index = notebooks.firstIndex(where: { $0.id == notebookID }) else {
+            errorMessage = "The notebook or folder could not be found. Saved files are preserved."
+            return false
+        }
+        guard notebooks[index].folderID != folderID else { return true }
+        var updatedNotebooks = notebooks
+        updatedNotebooks[index].folderID = folderID
+        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders,
+                                            revision: libraryRevision + 1)
+        guard await saveMembership(library) else { return false }
+        // Keep any cover revision that changed while the index write was queued.
+        notebooks[index].folderID = folderID
+        return true
+    }
+
+    /// Call only while holding the FIFO index permit, with a fresh library snapshot.
+    private func saveMembership(_ library: CanvasNotebookLibrary) async -> Bool {
+        guard let directoryURL else { return false }
+        let allowMissingIndex = !hasPublishedIndex
+        let succeeded: Bool = await withCheckedContinuation { continuation in
+            storageQueue.async {
+                do {
+                    try Self.writeLibrary(library, in: directoryURL, allowMissingIndex: allowMissingIndex)
+                    continuation.resume(returning: true)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+        if succeeded {
+            libraryRevision = library.revision
+            hasPublishedIndex = true
+            errorMessage = nil
+        } else {
+            errorMessage = "The folder change could not be saved. Saved files are preserved. Close and reopen the app before you try again."
+        }
+        return succeeded
     }
 
     /// Hold the mutation permit across each await, before taking an index snapshot.
@@ -189,7 +287,7 @@ final class CanvasNotebookStore: ObservableObject {
                                   textBoxes: [], shapes: [], scratchEraseEnabled: true,
                                   paper: updatedNotebooks[index].defaultPaper)
         updatedNotebooks[index].pageIDs.insert(pageID, at: insertionIndex)
-        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks)
+        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders, revision: libraryRevision + 1)
         let fileURL = Self.pageURL(pageID, notebookID: notebookID, in: directoryURL)
         let result: Result<Void, Error> = await withCheckedContinuation { continuation in
             storageQueue.async {
@@ -208,6 +306,7 @@ final class CanvasNotebookStore: ObservableObject {
         }
         switch result {
         case .success:
+            libraryRevision = library.revision
             let store = CanvasPageStore(page: page, fileURL: fileURL, saveQueue: storageQueue)
             pageStores[notebookID]?[pageID] = store
             notebooks[index].pageIDs.insert(pageID, at: insertionIndex)
@@ -230,7 +329,7 @@ final class CanvasNotebookStore: ObservableObject {
         guard notebooks[index].defaultPaper != paper else { return true }
         var updatedNotebooks = notebooks
         updatedNotebooks[index].defaultPaper = paper
-        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks)
+        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders, revision: libraryRevision + 1)
         let succeeded: Bool = await withCheckedContinuation { continuation in
             storageQueue.async {
                 do {
@@ -242,6 +341,7 @@ final class CanvasNotebookStore: ObservableObject {
             }
         }
         if succeeded {
+            libraryRevision = library.revision
             notebooks[index].defaultPaper = paper
             errorMessage = nil
         } else {
@@ -376,6 +476,9 @@ final class CanvasNotebookStore: ObservableObject {
         if FileManager.default.fileExists(atPath: url.path) {
             let existing = try JSONDecoder().decode(CanvasNotebookLibrary.self, from: Data(contentsOf: url))
             try existing.validate()
+            guard existing.revision == library.revision - 1 else {
+                throw CanvasNotebookStorageError.staleLibrary
+            }
         } else if !allowMissingIndex {
             throw CanvasNotebookStorageError.invalidLibrary
         }

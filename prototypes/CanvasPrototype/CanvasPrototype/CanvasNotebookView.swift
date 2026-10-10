@@ -10,6 +10,7 @@ struct CanvasNotebookView: View {
     @State private var isNavigating = false
     @State private var isAddingPage = false
     @State private var isChangingPaper = false
+    @State private var isMovingNotebook = false
     @State private var navigationError: String?
     @State private var scrollRequest: CanvasNotebookScrollRequest?
     @State private var zoomPercent = 100
@@ -32,6 +33,28 @@ struct CanvasNotebookView: View {
     var body: some View {
         let entries = orderedPages
         VStack(spacing: 0) {
+            HStack {
+                Text(library.folderName(for: currentNotebook.folderID)).foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Menu {
+                    Button("Unfiled") { moveNotebook(to: .unfiled) }
+                        .disabled(currentNotebook.folderID == .unfiled)
+                    ForEach(library.folders) { folder in
+                        Button(folder.name) { moveNotebook(to: folder.folderID) }
+                            .disabled(currentNotebook.folderID == folder.folderID)
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        CanvasLucideIcon(kind: .folder)
+                        Text(isMovingNotebook ? "Moving…" : "Move notebook")
+                    }.frame(minHeight: 44)
+                }
+                .disabled(isMovingNotebook || isNavigating || isAddingPage || isChangingPaper)
+                .accessibilityLabel("Move notebook to folder")
+            }
+            .padding(.horizontal, 12)
+            .background(Color(uiColor: .secondarySystemBackground))
             if let navigationError {
                 Text(navigationError).font(.callout).foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -76,8 +99,21 @@ struct CanvasNotebookView: View {
         }
     }
 
+    private func moveNotebook(to folderID: CanvasFolderID) {
+        guard !isMovingNotebook, !isNavigating, !isAddingPage, !isChangingPaper else { return }
+        isMovingNotebook = true
+        Task {
+            if await library.moveNotebook(notebook.id, to: folderID) {
+                navigationError = nil
+            } else {
+                navigationError = library.errorMessage ?? "The notebook could not be moved. Saved files are preserved."
+            }
+            isMovingNotebook = false
+        }
+    }
+
     private func close() {
-        guard !isNavigating, !isAddingPage, !isChangingPaper else { return }
+        guard !isNavigating, !isAddingPage, !isChangingPaper, !isMovingNotebook else { return }
         isNavigating = true
         orderedPages.forEach { $0.store.finishTextEditing() }
         Task {
