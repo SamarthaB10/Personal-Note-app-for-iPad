@@ -32,6 +32,7 @@ final class CanvasToolSettings: ObservableObject {
     @Published var shapeKind: CanvasShapeKind {
         didSet { defaults.set(shapeKind.rawValue, forKey: Self.key("shapeKind")) }
     }
+    @Published private(set) var textFontSize: CGFloat
     private(set) var rememberedEraserTool: CanvasTool
     private(set) var rememberedLassoTool: CanvasTool
 
@@ -45,6 +46,8 @@ final class CanvasToolSettings: ObservableObject {
         self.appearance = appearance
         let selected = defaults.string(forKey: Self.key("selected")).flatMap(CanvasTool.init(rawValue:)) ?? .pen
         tool = selected
+        let fontSize = defaults.double(forKey: Self.key("textBox.fontSize"))
+        textFontSize = fontSize.isFinite && fontSize >= 8 && fontSize <= 96 ? CGFloat(fontSize) : 20
         shapeKind = defaults.string(forKey: Self.key("shapeKind"))
             .flatMap(CanvasShapeKind.init(rawValue:)) ?? .triangle
         let savedColor = defaults.string(forKey: Self.key("\(selected.rawValue).color"))
@@ -61,6 +64,13 @@ final class CanvasToolSettings: ObservableObject {
     func setWidth(_ width: CGFloat) {
         guard let valid = Self.validWidth(Double(width)) else { return }
         inkWidth = valid
+    }
+
+    /// This default applies only when the user adds a new text box.
+    func setTextFontSize(_ size: CGFloat) {
+        guard size.isFinite, (8...96).contains(size) else { return }
+        textFontSize = size
+        defaults.set(Double(size), forKey: Self.key("textBox.fontSize"))
     }
 
     /// Change future content settings only. Stored page colors are never updated here.
