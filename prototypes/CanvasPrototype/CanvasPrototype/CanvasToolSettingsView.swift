@@ -63,6 +63,21 @@ struct CanvasToolSettingsView: View {
                         .frame(minHeight: 44)
                         .accessibilityLabel("\(control.title) manual width")
                 }
+                if control == .marker {
+                    HStack {
+                        Text("Opacity")
+                        Spacer()
+                        Text("\(Int((store.highlighterOpacity * 100).rounded()))%").monospacedDigit()
+                    }
+                    Slider(value: Binding(
+                        get: { store.highlighterOpacity },
+                        set: { activateControl(); store.highlighterOpacity = $0 }
+                    ), in: 0.1...0.8, step: 0.05)
+                    .frame(minHeight: 44)
+                    .accessibilityLabel("Highlighter opacity")
+                    Text("Changes new highlights. Existing highlights keep their opacity.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 if control == .textBox {
                     if let box = store.formattingTextBox {
                         Text("Existing text box").font(.subheadline.weight(.semibold))

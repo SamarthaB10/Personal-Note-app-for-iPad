@@ -48,10 +48,10 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     private var configuredTool: CanvasTool?
     private var configuredColor: CanvasColor?
     private var configuredWidth: CGFloat?
+    private var configuredHighlighterOpacity: CGFloat?
     private var lastAppliedDrawingRevision: Int?
     private var pageGestureEnabled: Bool?
     private var pencilGestureEnabled: Bool?
-    private var canvasDrawingEnabled: Bool?
     private var scratchGestureEnabled: Bool?
     private var isUsingPencil = false
     private var hasPendingInkChanges = false
@@ -365,11 +365,13 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             updateSelectionActions()
         }
 
-        if configuredTool != tool || configuredColor != color || configuredWidth != width {
+        if configuredTool != tool || configuredColor != color || configuredWidth != width
+            || (tool == .highlighter && configuredHighlighterOpacity != store.highlighterOpacity) {
             configureInkTool(tool: tool, color: color, width: width)
             configuredTool = tool
             configuredColor = color
             configuredWidth = width
+            configuredHighlighterOpacity = store.highlighterOpacity
         }
 
         let shouldCaptureFinger = store.canWrite && tool.capturesFingerInput
@@ -384,9 +386,9 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             pencilToolGesture.isEnabled = pencilToolEnabled
             pencilGestureEnabled = pencilToolEnabled
         }
-        if canvasDrawingEnabled != shouldDrawInk {
+        // PencilKit can enable this recognizer when its tool changes. Read the actual state.
+        if canvasView.drawingGestureRecognizer.isEnabled != shouldDrawInk {
             canvasView.drawingGestureRecognizer.isEnabled = shouldDrawInk
-            canvasDrawingEnabled = shouldDrawInk
         }
         if scratchGestureEnabled != shouldUseScratch {
             scratchGesture.isEnabled = shouldUseScratch
@@ -443,7 +445,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         case .pen:
             canvasView.tool = PKInkingTool(.pen, color: color.uiColor, width: width)
         case .highlighter:
-            canvasView.tool = PKInkingTool(.marker, color: color.uiColor.withAlphaComponent(0.35), width: width * 3)
+            canvasView.tool = PKInkingTool(.marker,
+                color: color.uiColor.withAlphaComponent(store.highlighterOpacity), width: width * 3)
         case .partialEraser:
             canvasView.tool = PKEraserTool(.bitmap)
         case .objectEraser:

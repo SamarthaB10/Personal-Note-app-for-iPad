@@ -19,6 +19,10 @@ final class CanvasPageStore: ObservableObject {
         get { toolSettings.inkWidth }
         set { toolSettings.setWidth(newValue) }
     }
+    var highlighterOpacity: CGFloat {
+        get { toolSettings.highlighterOpacity }
+        set { toolSettings.setHighlighterOpacity(newValue) }
+    }
     var shapeKind: CanvasShapeKind {
         get { toolSettings.shapeKind }
         set { toolSettings.shapeKind = newValue }
