@@ -1,7 +1,33 @@
 import Foundation
 
-enum CanvasFolderID: String, Codable {
+enum CanvasFolderID: Codable, Hashable {
     case unfiled
+    case custom(UUID)
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        if value == "unfiled" {
+            self = .unfiled
+        } else if let id = UUID(uuidString: value) {
+            self = .custom(id)
+        } else {
+            throw CanvasNotebookStorageError.invalidLibrary
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .unfiled: try value.encode("unfiled")
+        case .custom(let id): try value.encode(id.uuidString)
+        }
+    }
+}
+
+struct CanvasFolder: Codable, Identifiable {
+    var id: UUID
+    var name: String
+    var folderID: CanvasFolderID { .custom(id) }
 }
 
 struct CanvasNotebook: Codable, Identifiable {
@@ -45,14 +71,41 @@ struct CanvasNotebook: Codable, Identifiable {
 struct CanvasNotebookLibrary: Codable {
     var formatVersion = 1
     var notebooks: [CanvasNotebook] = []
+    var folders: [CanvasFolder] = []
+    var revision = 0
+
+    init(notebooks: [CanvasNotebook] = [], folders: [CanvasFolder] = [], revision: Int = 0) {
+        self.notebooks = notebooks
+        self.folders = folders
+        self.revision = revision
+    }
+
+    private enum CodingKeys: String, CodingKey { case formatVersion, notebooks, folders, revision }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try values.decode(Int.self, forKey: .formatVersion)
+        notebooks = try values.decode([CanvasNotebook].self, forKey: .notebooks)
+        // The issue 3 and issue 4 indexes have no folder list or revision.
+        folders = try values.decodeIfPresent([CanvasFolder].self, forKey: .folders) ?? []
+        revision = try values.decodeIfPresent(Int.self, forKey: .revision) ?? 0
+    }
 
     func validate() throws {
-        guard formatVersion == 1,
+        guard formatVersion == 1, revision >= 0, revision < Int.max,
+              Set(folders.map(\.id)).count == folders.count,
               Set(notebooks.map(\.id)).count == notebooks.count else {
             throw CanvasNotebookStorageError.invalidLibrary
         }
+        for folder in folders {
+            guard !folder.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw CanvasNotebookStorageError.invalidLibrary
+            }
+        }
+        let folderIDs = Set(folders.map(\.folderID)).union([.unfiled])
         for notebook in notebooks {
-            guard !notebook.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            guard folderIDs.contains(notebook.folderID),
+                  !notebook.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   !notebook.pageIDs.isEmpty,
                   Set(notebook.pageIDs).count == notebook.pageIDs.count,
                   notebook.coverRevision >= 0 else {
@@ -65,4 +118,5 @@ struct CanvasNotebookLibrary: Codable {
 enum CanvasNotebookStorageError: Error {
     case invalidLibrary
     case missingNotebook
+    case staleLibrary
 }
