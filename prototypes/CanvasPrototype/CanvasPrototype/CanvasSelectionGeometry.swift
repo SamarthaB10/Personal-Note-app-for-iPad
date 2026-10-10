@@ -16,18 +16,21 @@ enum CanvasSelectionGeometry {
         if let shape = shapes.reversed().first(where: { $0.renderBounds.contains(point) }) {
             return CanvasSelection(shapeIDs: [shape.id])
         }
-        if let index = drawing.strokes.indices.reversed().first(where: { index in
-            strokeSamples(drawing.strokes[index]).contains { sample in
-                hypot(point.x - sample.location.x, point.y - sample.location.y) <= sample.radius + 6
-            }
-        }) {
-            return CanvasSelection(strokeIndices: [index])
-        }
+        let inkSelection = selectInk(at: point, drawing: drawing)
+        if !inkSelection.isEmpty { return inkSelection }
 
         // Do not guess which invisible box area the user meant when frames overlap.
         let boxes = textBoxes.filter { $0.frame.contains(point) }
         guard boxes.count == 1, let box = boxes.first else { return CanvasSelection() }
         return CanvasSelection(textBoxIDs: [box.id])
+    }
+
+    /// Select the top complete ink stroke. Callers apply text and shape hit priority first.
+    static func selectInk(at point: CGPoint, drawing: PKDrawing) -> CanvasSelection {
+        guard let index = drawing.strokes.indices.reversed().first(where: {
+            strokeContains(point, stroke: drawing.strokes[$0], padding: 6)
+        }) else { return CanvasSelection() }
+        return CanvasSelection(strokeIndices: [index])
     }
 
     /// Includes nearby visible text so stacked boxes can be chosen by their preview.
@@ -65,8 +68,14 @@ enum CanvasSelectionGeometry {
 
     private static func strokeContains(_ point: CGPoint, stroke: PKStroke, padding: CGFloat) -> Bool {
         guard stroke.renderBounds.insetBy(dx: -padding, dy: -padding).contains(point) else { return false }
-        return strokeSamples(stroke).contains { sample in
-            hypot(point.x - sample.location.x, point.y - sample.location.y) <= sample.radius + padding
+        return strokeSamplePaths(stroke).contains { samples in
+            if samples.count == 1, let sample = samples.first {
+                return hypot(point.x - sample.location.x, point.y - sample.location.y) <= sample.radius + padding
+            }
+            return zip(samples, samples.dropFirst()).contains { start, end in
+                distance(from: point, toSegmentFrom: start.location, to: end.location)
+                    <= max(start.radius, end.radius) + padding
+            }
         }
     }
 
@@ -79,7 +88,7 @@ enum CanvasSelectionGeometry {
         let area = rectangle.standardized
         return CanvasSelection(
             strokeIndices: Set(drawing.strokes.enumerated().compactMap { index, stroke in
-                area.contains(stroke.renderBounds) ? index : nil
+                strokeTouches(stroke, path: corners(of: area), includesInterior: true, closesPath: true) ? index : nil
             }),
             textBoxIDs: Set(textBoxes.compactMap { area.contains($0.frame) ? $0.id : nil }),
             shapeIDs: Set(shapes.compactMap { area.contains($0.renderBounds) ? $0.id : nil })
@@ -92,11 +101,11 @@ enum CanvasSelectionGeometry {
         textBoxes: [CanvasTextBox],
         shapes: [CanvasShape]
     ) -> CanvasSelection {
-        guard polygon.count >= 3 else { return CanvasSelection() }
+        guard polygon.count >= 2 else { return CanvasSelection() }
 
         return CanvasSelection(
             strokeIndices: Set(drawing.strokes.enumerated().compactMap { index, stroke in
-                strokeIsContained(stroke, in: polygon) ? index : nil
+                strokeTouches(stroke, path: polygon, includesInterior: polygon.count >= 3, closesPath: polygon.count >= 3) ? index : nil
             }),
             textBoxIDs: Set(textBoxes.compactMap { contains($0.frame, in: polygon) ? $0.id : nil }),
             shapeIDs: Set(shapes.compactMap { contains($0.renderBounds, in: polygon) ? $0.id : nil })
@@ -240,61 +249,84 @@ enum CanvasSelectionGeometry {
         return inside
     }
 
-    private static func strokeIsContained(_ stroke: PKStroke, in polygon: [CGPoint]) -> Bool {
-        guard !stroke.renderBounds.isEmpty else { return false }
-        let samples = strokeSamples(stroke)
-        guard !samples.isEmpty else { return false }
-
-        for sample in samples {
-            guard contains(sample.location, in: polygon), distanceToBoundary(sample.location, in: polygon) >= sample.radius + 2 else {
-                return false
+    /// Ink remains a complete stroke when a lasso touches any visible part of its path.
+    private static func strokeTouches(
+        _ stroke: PKStroke,
+        path: [CGPoint],
+        includesInterior: Bool,
+        closesPath: Bool
+    ) -> Bool {
+        let edges = closesPath ? polygonEdges(path) : polylineSegments(path)
+        guard !edges.isEmpty else { return false }
+        return strokeSamplePaths(stroke).contains { samples in
+            if samples.contains(where: { sample in
+                (includesInterior && contains(sample.location, in: path))
+                    || edges.contains { edge in
+                        distance(from: sample.location, toSegmentFrom: edge.0, to: edge.1) <= sample.radius + 6
+                    }
+            }) { return true }
+            return zip(samples, samples.dropFirst()).contains { start, end in
+                edges.contains { edge in
+                    segmentDistance(start.location, end.location, edge.0, edge.1)
+                        <= max(start.radius, end.radius) + 6
+                }
             }
         }
-        return true
     }
 
-    private static func strokeSamples(_ stroke: PKStroke) -> [(location: CGPoint, radius: CGFloat)] {
+    private typealias StrokeSample = (location: CGPoint, radius: CGFloat)
+
+    private static func strokeSamples(_ stroke: PKStroke) -> [StrokeSample] {
+        strokeSamplePaths(stroke).flatMap { $0 }
+    }
+
+    /// Keep masked ranges separate so contact cannot select an erased gap.
+    private static func strokeSamplePaths(_ stroke: PKStroke) -> [[StrokeSample]] {
         let path = stroke.path
         guard path.count > 0 else { return [] }
-
         let transformScale = max(hypot(stroke.transform.a, stroke.transform.b), hypot(stroke.transform.c, stroke.transform.d))
-        var samples: [(location: CGPoint, radius: CGFloat)] = []
-
-        let ranges: [ClosedRange<CGFloat>]
-        if stroke.mask == nil {
-            ranges = [0...CGFloat(path.count - 1)]
-        } else {
-            ranges = stroke.maskedPathRanges
-        }
-
-        for range in ranges {
+        let ranges = stroke.mask == nil ? [0...CGFloat(path.count - 1)] : stroke.maskedPathRanges
+        return ranges.map { range in
+            var samples: [StrokeSample] = []
             var parameter = range.lowerBound
             while parameter <= range.upperBound {
                 let point = path.interpolatedPoint(at: parameter)
-                samples.append((
-                    point.location.applying(stroke.transform),
-                    max(point.size.width, point.size.height) * transformScale / 2 + 1
-                ))
+                samples.append((point.location.applying(stroke.transform),
+                                max(point.size.width, point.size.height) * transformScale / 2 + 1))
                 let next = path.parametricValue(parameter, offsetBy: .distance(2))
                 guard next > parameter else { break }
                 parameter = next
             }
-
             let end = path.interpolatedPoint(at: range.upperBound)
             let location = end.location.applying(stroke.transform)
             if samples.last?.location != location {
                 samples.append((location, max(end.size.width, end.size.height) * transformScale / 2 + 1))
             }
+            return samples
         }
-        return samples
+    }
+
+    /// Includes crossings between samples, also for long or fast lasso segments.
+    private static func segmentDistance(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint, _ d: CGPoint) -> CGFloat {
+        func cross(_ start: CGPoint, _ end: CGPoint, _ point: CGPoint) -> CGFloat {
+            (end.x - start.x) * (point.y - start.y) - (end.y - start.y) * (point.x - start.x)
+        }
+        let abC = cross(a, b, c)
+        let abD = cross(a, b, d)
+        let cdA = cross(c, d, a)
+        let cdB = cross(c, d, b)
+        if ((abC < 0 && abD > 0) || (abC > 0 && abD < 0)),
+           ((cdA < 0 && cdB > 0) || (cdA > 0 && cdB < 0)) { return 0 }
+        return min(
+            distance(from: a, toSegmentFrom: c, to: d),
+            distance(from: b, toSegmentFrom: c, to: d),
+            distance(from: c, toSegmentFrom: a, to: b),
+            distance(from: d, toSegmentFrom: a, to: b)
+        )
     }
 
     private static func distance(_ point: CGPoint, toOpenPolyline path: [CGPoint]) -> CGFloat {
         polylineSegments(path).map { distance(from: point, toSegmentFrom: $0.0, to: $0.1) }.min() ?? .infinity
-    }
-
-    private static func distanceToBoundary(_ point: CGPoint, in polygon: [CGPoint]) -> CGFloat {
-        polygonEdges(polygon).map { distance(from: point, toSegmentFrom: $0.0, to: $0.1) }.min() ?? .infinity
     }
 
     private static func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {

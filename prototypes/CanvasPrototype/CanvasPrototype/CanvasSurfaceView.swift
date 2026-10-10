@@ -17,12 +17,17 @@ struct CanvasPageView: UIViewRepresentable {
     func updateUIView(_ view: CanvasSurfaceView, context: Context) {
         view.apply(store.page, tool: store.tool, color: store.color, width: store.inkWidth)
     }
+
+    static func dismantleUIView(_ view: CanvasSurfaceView, coordinator: ()) {
+        view.flushForRemoval()
+    }
 }
 
 @MainActor
 final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizerDelegate {
     private let logicalSize = CanvasPageGeometry.size
     private let pageView = UIView()
+    private let paperView = CanvasPaperBackgroundView()
     private let backgroundView = UIImageView()
     private let canvasView = PKCanvasView()
     private let itemView = CanvasItemOverlayView()
@@ -54,13 +59,28 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
     private var fingerStart: CGPoint?
     private var activePathInput: PagePathInput?
     private var activePathTool: CanvasTool?
+    private var activeShapeKind: CanvasShapeKind?
     private var selectionGesture: SelectionGesture?
     private var selectionDrawingBefore: PKDrawing?
     private var selectionMoveExtent: CGFloat = 0
+    private var selectionMoveThreshold: CGFloat = 0
     private var selectionTranslation = CGPoint.zero
     private var selectionScale: CGFloat = 1
     private var selectionAnchor = CGPoint.zero
     private var resizeIsArmed = false
+    private var ownsFlushCallback = false
+    private var isPreparedForRemoval = false
+    var notebookZoomScale: CGFloat = 1 {
+        didSet {
+            itemView.screenScale = pageScreenScale
+            itemView.setNeedsDisplay()
+            if selectionGesture == nil { updateSelectionActions() }
+        }
+    }
+
+    private var pageScreenScale: CGFloat {
+        max(0.1, hypot(pageView.transform.a, pageView.transform.b) * notebookZoomScale)
+    }
 
     private enum PagePathInput {
         case finger
@@ -85,6 +105,10 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         pageView.layer.borderWidth = 1
         addSubview(pageView)
 
+        paperView.frame = pageView.bounds
+        paperView.isUserInteractionEnabled = false
+        pageView.addSubview(paperView)
+
         backgroundView.frame = pageView.bounds
         backgroundView.contentMode = .scaleToFill
         backgroundView.image = store.showsPrototypeBackground ? Self.loadPDFBackground() : nil
@@ -93,6 +117,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
 
         canvasView.frame = pageView.bounds
         canvasView.delegate = self
+        // PencilKit must display the saved ink colors in either paper appearance.
+        canvasView.overrideUserInterfaceStyle = .light
         canvasView.backgroundColor = .clear
         canvasView.isOpaque = false
         canvasView.drawingPolicy = .pencilOnly
@@ -145,7 +171,15 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         scratchGesture.onScratchCancelled = { [weak self] in self?.cancelScratchErase() }
         pageView.addGestureRecognizer(scratchGesture)
 
-        store.onFlushCanvasDrawing = { [weak self] in self?.commitPendingDrawing(allowDuringPencil: true) }
+        store.onFlushCanvasDrawing = { [weak self] in
+            guard let self, !self.isPreparedForRemoval else { return }
+            self.ownsFlushCallback = true
+            self.commitPendingDrawing(allowDuringPencil: true)
+        }
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: CanvasSurfaceView, _: UITraitCollection) in
+            view.updatePaperAppearance()
+        }
 
         apply(store.page, tool: store.tool, color: store.color, width: store.inkWidth)
     }
@@ -155,6 +189,60 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         fatalError("init(coder:) is not supported")
     }
 
+    /// The scroll container keeps this surface attached until input has ended.
+    var isInteractingWithPage: Bool {
+        isUsingPencil || activePathInput != nil || editor?.isFirstResponder == true
+    }
+
+    /// Flush before eviction. A newer surface's callback must remain installed.
+    func prepareForRemoval() -> Bool {
+        guard !isUsingPencil, !scratchIsRecognized, activePathInput == nil else { return false }
+        flushForRemoval()
+        return true
+    }
+
+    func flushForRemoval() {
+        guard !isPreparedForRemoval else { return }
+        finishSelectionGesture(cancelled: true)
+        resetPagePath()
+        if scratchIsRecognized { cancelScratchErase() }
+        store.finishTextEditing()
+        removeTextEditor()
+        commitPendingDrawing(allowDuringPencil: true)
+        ownsFlushCallback = false
+        store.onFlushCanvasDrawing?()
+        if ownsFlushCallback { store.onFlushCanvasDrawing = nil }
+        isPreparedForRemoval = true
+        canvasView.delegate = nil
+        fingerGesture.isEnabled = false
+        pencilToolGesture.isEnabled = false
+        scratchGesture.isEnabled = false
+        pendingDrawingSave?.cancel()
+        pendingDrawingSave = nil
+    }
+
+    /// Finger paths use page tools. The notebook keeps two-finger pan and pinch available.
+    func permitsNotebookPan(at point: CGPoint) -> Bool {
+        let pagePoint = pageView.convert(point, from: self)
+        if !selectionActions.isHidden, selectionActions.frame.contains(pagePoint) { return false }
+        if let editor, editor.frame.contains(pagePoint) { return false }
+        if store.tool == .rectangle || store.tool == .freehandLasso
+            || store.tool == .boxedLasso || store.tool == .selection {
+            return false
+        }
+        return true
+    }
+
+    private func updatePaperAppearance() {
+        let hasPDF = backgroundView.image != nil
+        pageView.backgroundColor = hasPDF ? .white : .systemBackground
+        paperView.paper = store.page.paper
+        paperView.isHidden = hasPDF
+        paperView.setNeedsDisplay()
+        pageView.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
+        editor?.backgroundColor = hasPDF ? .white : .systemBackground
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let scale = min(bounds.width / logicalSize.width, bounds.height / logicalSize.height)
@@ -162,10 +250,14 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         pageView.bounds = CGRect(origin: .zero, size: logicalSize)
         pageView.center = CGPoint(x: bounds.midX, y: bounds.midY)
         pageView.transform = CGAffineTransform(scaleX: scale, y: scale)
+        itemView.screenScale = pageScreenScale
+        itemView.setNeedsDisplay()
         if selectionGesture == nil { updateSelectionActions() }
     }
 
     func apply(_ page: CanvasPageData, tool: CanvasTool, color: CanvasColor, width: CGFloat) {
+        guard !isPreparedForRemoval else { return }
+        updatePaperAppearance()
         if selectionGesture != nil,
            configuredTool != tool || itemView.selection != store.selection {
             finishSelectionGesture(cancelled: true)
@@ -179,7 +271,9 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         itemView.selectionOutline = store.selectionOutline
         itemView.lassoPreview = store.lassoPreview
         itemView.lassoTool = tool
-        itemView.shapePreview = nil
+        if activePathTool != .rectangle { itemView.shapePreview = [] }
+        itemView.shapePreviewColor = color.uiColor
+        itemView.shapePreviewWidth = width
         itemView.editingTextBoxID = tool == .textBox ? store.editingTextBoxID : nil
         itemView.setNeedsDisplay()
 
@@ -195,9 +289,10 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             configuredWidth = width
         }
 
-        let shouldCaptureFinger = tool.capturesFingerInput
-        let pencilToolEnabled = tool == .rectangle || tool == .freehandLasso || tool == .boxedLasso || tool == .selection
-        let shouldUseScratch = page.scratchEraseEnabled && (tool == .pen || tool == .highlighter)
+        let shouldCaptureFinger = store.canWrite && tool.capturesFingerInput
+        let pencilToolEnabled = store.canWrite && (tool == .rectangle || tool == .freehandLasso || tool == .boxedLasso || tool == .selection)
+        let shouldUseScratch = store.canWrite && page.scratchEraseEnabled && (tool == .pen || tool == .highlighter)
+        let shouldDrawInk = store.canWrite && !pencilToolEnabled
         if pageGestureEnabled != shouldCaptureFinger {
             fingerGesture.isEnabled = shouldCaptureFinger
             pageGestureEnabled = shouldCaptureFinger
@@ -206,15 +301,15 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             pencilToolGesture.isEnabled = pencilToolEnabled
             pencilGestureEnabled = pencilToolEnabled
         }
-        if canvasDrawingEnabled != !pencilToolEnabled {
-            canvasView.drawingGestureRecognizer.isEnabled = !pencilToolEnabled
-            canvasDrawingEnabled = !pencilToolEnabled
+        if canvasDrawingEnabled != shouldDrawInk {
+            canvasView.drawingGestureRecognizer.isEnabled = shouldDrawInk
+            canvasDrawingEnabled = shouldDrawInk
         }
         if scratchGestureEnabled != shouldUseScratch {
             scratchGesture.isEnabled = shouldUseScratch
             scratchGestureEnabled = shouldUseScratch
         }
-        updateTextEditor(for: page, editingID: tool == .textBox ? store.editingTextBoxID : nil)
+        updateTextEditor(for: page, editingID: store.canWrite && tool == .textBox ? store.editingTextBoxID : nil)
         textBoxHighlightView.highlightFrame = page.textBoxes.first { $0.id == store.previewTextBoxID }?.frame
         textBoxHighlightView.setNeedsDisplay()
         pageView.bringSubviewToFront(textBoxHighlightView)
@@ -373,10 +468,13 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             commitPendingDrawing()
             fingerStart = point
             activePathTool = store.tool
+            activeShapeKind = store.shapeKind
             selectionGesture = nil
             switch store.tool {
             case .freehandLasso, .boxedLasso, .selection:
                 if beginSelectionGesture(at: point) {
+                    activePathTool = .selection
+                } else if beginTouchedInkGesture(at: point) {
                     activePathTool = .selection
                 } else {
                     clearResizeMode()
@@ -390,7 +488,8 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             guard activePathInput == input, let start = fingerStart, let point = points.last else { return }
             switch activePathTool ?? store.tool {
             case .rectangle:
-                itemView.shapePreview = CGRect(x: start.x, y: start.y, width: point.x - start.x, height: point.y - start.y).standardized
+                itemView.shapePreview = CanvasShapeInk.locations(kind: activeShapeKind ?? store.shapeKind,
+                                                                 from: start, to: point)
                 itemView.setNeedsDisplay()
             case .freehandLasso:
                 store.updateLassoPreview(points)
@@ -409,19 +508,16 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             case .textBox where pathExtent < 8:
                 store.addTextBox(at: start)
             case .rectangle:
-                store.addRectangle(from: start, to: end)
-            case .freehandLasso where pathExtent < 8, .boxedLasso where pathExtent < 8:
-                store.selectObject(at: start)
-            case .freehandLasso:
-                store.finishFreehandLasso(points)
-            case .boxedLasso:
-                store.finishBoxLasso(from: start, to: end)
+                store.addShape(from: start, to: end, kind: activeShapeKind)
+            case .freehandLasso, .boxedLasso:
+                finishLassoPath(points, start: start, end: end, extent: pathExtent)
             default:
                 break
             }
             if selectionGesture != nil {
                 updateSelectionGesture(at: end)
-                if case .move = selectionGesture, selectionMoveExtent < 8 {
+                if case .move = selectionGesture,
+                   selectionMoveExtent == 0 || (selectionMoveThreshold > 0 && selectionMoveExtent < selectionMoveThreshold) {
                     // Restore the full drawing before selectObject flushes live ink.
                     finishSelectionGesture(cancelled: true)
                     if CanvasSelectionGeometry.textBoxCandidates(at: start, in: store.page.textBoxes).count > 1 {
@@ -439,27 +535,61 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         }
     }
 
+    /// Allow tap jitter for whole objects. A short ink path still uses contact geometry.
+    private func finishLassoPath(_ points: [CGPoint], start: CGPoint, end: CGPoint, extent: CGFloat) {
+        if extent < 8 {
+            let hit = CanvasSelectionGeometry.selectObject(
+                at: start, drawing: canvasView.drawing,
+                textBoxes: store.page.textBoxes, shapes: store.page.shapes
+            )
+            let hasObjectHit = !hit.textBoxIDs.isEmpty || !hit.shapeIDs.isEmpty
+            let needsBoxChoice = CanvasSelectionGeometry.textBoxCandidates(at: start, in: store.page.textBoxes).count > 1
+            if extent == 0 || hasObjectHit || needsBoxChoice {
+                store.selectObject(at: start)
+                return
+            }
+        }
+        if activePathTool == .boxedLasso {
+            store.finishBoxLasso(from: start, to: end)
+        } else {
+            store.finishFreehandLasso(points)
+        }
+    }
+
     private func resetPagePath() {
         fingerStart = nil
         selectionGesture = nil
         activePathTool = nil
         activePathInput = nil
-        itemView.shapePreview = nil
+        activeShapeKind = nil
+        itemView.shapePreview = []
         itemView.setNeedsDisplay()
         fingerGesture.recordsFullPath = true
         pencilToolGesture.recordsFullPath = true
         store.updateLassoPreview([])
     }
 
+    private func beginTouchedInkGesture(at point: CGPoint) -> Bool {
+        let hit = CanvasSelectionGeometry.selectObject(
+            at: point, drawing: canvasView.drawing,
+            textBoxes: store.page.textBoxes, shapes: store.page.shapes
+        )
+        guard !hit.strokeIndices.isEmpty, store.selectTouchedInk(at: point) else { return false }
+        // Synchronize overlay selection before the first transform update arrives.
+        apply(store.page, tool: store.tool, color: store.color, width: store.inkWidth)
+        return beginSelectionGesture(at: point, touchedInk: true)
+    }
+
     /// Start on selected content to drag it. Whitespace remains available for a new loop.
-    private func beginSelectionGesture(at point: CGPoint) -> Bool {
+    private func beginSelectionGesture(at point: CGPoint, touchedInk: Bool = false) -> Bool {
         guard let bounds = store.selectionBounds else { return false }
         let resizeHandle = CanvasSelectionHandles.resizeCenter(for: bounds)
-        let touchesResizeHandle = hypot(point.x - resizeHandle.x, point.y - resizeHandle.y) <= 18
-        let touchesSelectedContent = store.directSelectionContains(point)
+        let touchesResizeHandle = hypot(point.x - resizeHandle.x, point.y - resizeHandle.y) <= 18 / pageScreenScale
+        // The initial ink hit already chose the top stroke, including at a crossing.
+        let touchesSelectedContent = touchedInk || store.directSelectionContains(point)
         guard touchesResizeHandle || touchesSelectedContent else { return false }
         selectionAnchor = CGPoint(x: bounds.midX, y: bounds.midY)
-        if resizeIsArmed || (touchesResizeHandle && !touchesSelectedContent) {
+        if !touchedInk && (resizeIsArmed || (touchesResizeHandle && !touchesSelectedContent)) {
             selectionGesture = .resize(startDistance: max(1, hypot(point.x - selectionAnchor.x, point.y - selectionAnchor.y)))
         } else {
             selectionGesture = .move(startPoint: point)
@@ -468,6 +598,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         fingerGesture.recordsFullPath = false
         pencilToolGesture.recordsFullPath = false
         selectionMoveExtent = 0
+        selectionMoveThreshold = store.selection.strokeIndices.isEmpty ? 8 : 0
         selectionTranslation = .zero
         selectionScale = 1
         store.beginSelectionTransform()
@@ -490,7 +621,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         case let .move(startPoint):
             let translation = CGPoint(x: point.x - startPoint.x, y: point.y - startPoint.y)
             selectionMoveExtent = max(selectionMoveExtent, hypot(translation.x, translation.y))
-            guard selectionMoveExtent >= 8 else { return }
+            guard selectionMoveExtent >= selectionMoveThreshold else { return }
             selectionTranslation = translation
         case let .resize(startDistance):
             let distance = max(1, hypot(point.x - selectionAnchor.x, point.y - selectionAnchor.y))
@@ -559,7 +690,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             return
         }
         let outlineBounds = store.selectionOutline.reduce(bounds) { $0.union(CGRect(origin: $1, size: CGSize(width: 0.1, height: 0.1))) }
-        let pageScale = max(0.1, hypot(pageView.transform.a, pageView.transform.b))
+        let pageScale = pageScreenScale
         let buttonWidth = 44 / pageScale
         let height = 44 / pageScale
         let width = buttonWidth * 3
@@ -632,6 +763,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         if currentEditor.frame != box.frame { currentEditor.frame = box.frame }
         let font = UIFont.systemFont(ofSize: box.fontSize)
         if currentEditor.font != font { currentEditor.font = font }
+        currentEditor.backgroundColor = backgroundView.image != nil ? .white : .systemBackground
         let color = box.color.uiColor
         if currentEditor.textColor != color { currentEditor.textColor = color }
         if !currentEditor.isFirstResponder, currentEditor.text != box.text {
@@ -668,8 +800,11 @@ private final class CanvasItemOverlayView: UIView {
     var selectionTransform = CGAffineTransform.identity
     var lassoPreview: [CGPoint] = []
     var lassoTool: CanvasTool = .pen
-    var shapePreview: CGRect?
+    var shapePreview: [CGPoint] = []
+    var shapePreviewColor = UIColor.black
+    var shapePreviewWidth: CGFloat = 3
     var editingTextBoxID: UUID?
+    var screenScale: CGFloat = 1
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
@@ -701,12 +836,14 @@ private final class CanvasItemOverlayView: UIView {
             context.restoreGState()
         }
 
-        if let shapePreview {
-            context.setStrokeColor(UIColor.systemBlue.withAlphaComponent(0.75).cgColor)
-            context.setLineWidth(2)
-            context.setLineDash(phase: 0, lengths: [6, 4])
-            context.stroke(shapePreview)
-            context.setLineDash(phase: 0, lengths: [])
+        if shapePreview.count >= 2 {
+            context.beginPath()
+            context.addLines(between: shapePreview)
+            context.setStrokeColor(shapePreviewColor.cgColor)
+            context.setLineWidth(shapePreviewWidth)
+            context.setLineJoin(.round)
+            context.setLineCap(.round)
+            context.strokePath()
         }
 
         if lassoTool == .boxedLasso, lassoPreview.count >= 2 {
@@ -744,7 +881,8 @@ private final class CanvasItemOverlayView: UIView {
             }
             context.setLineDash(phase: 0, lengths: [])
             let resizeCenter = CanvasSelectionHandles.resizeCenter(for: selectionBounds)
-            let handle = CGRect(x: resizeCenter.x - 7, y: resizeCenter.y - 7, width: 14, height: 14)
+            let radius = 7 / max(0.1, screenScale)
+            let handle = CGRect(x: resizeCenter.x - radius, y: resizeCenter.y - radius, width: radius * 2, height: radius * 2)
             context.setFillColor(UIColor.white.cgColor)
             context.fillEllipse(in: handle)
             context.setStrokeColor(UIColor.systemBlue.cgColor)
@@ -791,13 +929,30 @@ private enum CanvasSelectionHandles {
     }
 }
 
-private extension CanvasColor {
-    var uiColor: UIColor {
-        switch self {
-        case .black: .black
-        case .blue: .systemBlue
-        case .red: .systemRed
-        case .green: .systemGreen
+/// Draw paper in page coordinates. Appearance changes never change stored page content.
+private final class CanvasPaperBackgroundView: UIView {
+    var paper: CanvasPaper = .blank
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        let isDark = traitCollection.userInterfaceStyle == .dark
+        context.setFillColor((isDark ? UIColor(white: 0.08, alpha: 1) : .white).cgColor)
+        context.fill(bounds)
+        guard paper != .blank else { return }
+        context.setStrokeColor((isDark ? UIColor(white: 0.28, alpha: 1) : UIColor(white: 0.84, alpha: 1)).cgColor)
+        context.setLineWidth(0.5)
+        let spacing: CGFloat = paper == .lined ? 28 : 24
+        context.beginPath()
+        for y in stride(from: spacing, through: bounds.height, by: spacing) {
+            context.move(to: CGPoint(x: 0, y: y))
+            context.addLine(to: CGPoint(x: bounds.width, y: y))
         }
+        if paper == .grid {
+            for x in stride(from: spacing, through: bounds.width, by: spacing) {
+                context.move(to: CGPoint(x: x, y: 0))
+                context.addLine(to: CGPoint(x: x, y: bounds.height))
+            }
+        }
+        context.strokePath()
     }
 }

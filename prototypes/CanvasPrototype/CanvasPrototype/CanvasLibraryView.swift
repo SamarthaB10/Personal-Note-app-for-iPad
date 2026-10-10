@@ -3,6 +3,7 @@ import SwiftUI
 /// The library owns navigation. Notebook creation and saving stay in the store.
 struct CanvasLibraryView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(CanvasAppearance.defaultsKey) private var appearanceValue = CanvasAppearance.light.rawValue
     @StateObject private var store = CanvasNotebookStore()
     @State private var openedNotebook: CanvasNotebook?
     @State private var openedPages: [CanvasPageStore] = []
@@ -21,6 +22,7 @@ struct CanvasLibraryView: View {
             }
         }
         .tint(.blue)
+        .preferredColorScheme((CanvasAppearance(rawValue: appearanceValue) ?? .light).colorScheme)
         .sheet(isPresented: $showsCreate) {
             CanvasCreateNotebookView(store: store) { notebook in
                 showsCreate = false

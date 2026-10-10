@@ -1,64 +1,83 @@
 import SwiftUI
 
+/// Notebook controls remain outside the zoomed page column.
 struct CanvasPrototypeRootView: View {
     @ObservedObject var store: CanvasPageStore
+    let pages: [CanvasNotebookPage]
     let notebookTitle: String
     let pageNumber: Int
     let pageCount: Int
+    let defaultPaper: CanvasPaper
     let isNavigating: Bool
+    let isAddingPage: Bool
+    let isChangingPaper: Bool
+    let appearance: CanvasAppearance
+    let zoomPercent: Int
+    let scrollRequest: CanvasNotebookScrollRequest?
     let onBack: () -> Void
     let onPageChange: (Int) -> Void
-    @State private var showsToolSettings = false
+    let onVisiblePageChange: (Int) -> Void
+    let onZoomChange: (Int) -> Void
+    let onAddPage: () -> Void
+    let onAddPageAfterCurrent: () -> Void
+    let onDefaultPaperChange: (CanvasPaper) -> Void
+    let onAppearanceChange: (CanvasAppearance) -> Void
+    @State private var settingsControl: CanvasToolControl?
     @State private var showsSelectionActions = false
-    @State private var showsSaveStatus = false
-    @State private var eraserTool: CanvasTool = .partialEraser
-    @State private var lassoTool: CanvasTool = .freehandLasso
 
     var body: some View {
         VStack(spacing: 0) {
             header
             toolBar
-            if showsSaveStatus || store.actionMessage != nil || !store.canWrite || store.hasSaveError {
+            if store.actionMessage != nil || !store.canWrite || store.hasSaveError {
                 saveStatus
             }
-            GeometryReader { geometry in
-                ScrollView(.vertical) {
-                    CanvasPageView(store: store)
-                        .frame(width: geometry.size.width,
-                               height: geometry.size.width * CanvasPageGeometry.size.height / CanvasPageGeometry.size.width)
+            ForEach(Array(pages.enumerated()), id: \.element.id) { index, page in
+                if index + 1 != pageNumber {
+                    CanvasPageSaveErrorRow(store: page.store, pageNumber: index + 1)
                 }
-                .scrollDisabled(store.tool.capturesFingerInput)
+            }
+            GeometryReader { geometry in
+                CanvasNotebookScrollView(
+                    pages: pages, appearance: appearance,
+                    isAddingPage: isAddingPage,
+                    canAddPage: pageCount < CanvasNotebook.maximumPageCount && !isNavigating && !isChangingPaper,
+                    scrollRequest: scrollRequest,
+                    onVisiblePageChange: onVisiblePageChange, onZoomChange: onZoomChange,
+                    onAddPage: onAddPage
+                )
                 .overlay(alignment: .bottomTrailing) {
                     if !store.textBoxCandidates.isEmpty {
-                        textBoxChooser(listHeight: min(240, max(88, geometry.size.height - 180)))
+                        CanvasTextBoxChooser(store: store, listHeight: min(240, max(88, geometry.size.height - 180)))
                             .frame(width: min(340, max(0, geometry.size.width - 24)))
                             .padding(12)
                     }
                 }
             }
-            .accessibilityLabel("Editable page")
-            pageNavigation
         }
         .background(Color(uiColor: .systemBackground))
-        .preferredColorScheme(.light)
+        .onChange(of: pageNumber) { _, _ in
+            showsSelectionActions = false
+            settingsControl = nil
+        }
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button(action: onBack) {
-                CanvasLucideIcon(kind: .arrowLeft)
-                    .frame(width: 44, height: 44)
+                CanvasLucideIcon(kind: .home).frame(width: 44, height: 44)
             }
-            .disabled(isNavigating)
-            .accessibilityLabel("Back to library")
-            .accessibilityHint("Save this notebook and return to Unfiled")
+            .disabled(isNavigating || isAddingPage || isChangingPaper)
+            .accessibilityLabel("Home")
+            .accessibilityHint("Return to this notebook’s folder")
             VStack(alignment: .leading, spacing: 2) {
                 Text(notebookTitle).font(.headline).lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
                 Text("Page \(pageNumber) of \(pageCount)").font(.caption).foregroundStyle(.secondary)
             }
+            Spacer(minLength: 0)
             Menu {
-                ForEach(1...pageCount, id: \.self) { number in
+                ForEach(1...max(1, pageCount), id: \.self) { number in
                     Button("Page \(number)") { onPageChange(number - 1) }
                 }
             } label: {
@@ -66,75 +85,33 @@ struct CanvasPrototypeRootView: View {
             }
             .disabled(isNavigating)
             .accessibilityLabel("Choose page, current page \(pageNumber) of \(pageCount)")
-            Spacer(minLength: 8)
+            Button("Add Page", action: onAddPageAfterCurrent)
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(isNavigating || isAddingPage || isChangingPaper
+                          || pageCount >= CanvasNotebook.maximumPageCount)
+                .accessibilityHint("Add a page after the current page")
+            Text("\(zoomPercent)%")
+                .font(.subheadline).monospacedDigit().frame(minWidth: 44)
+                .accessibilityLabel("Zoom \(zoomPercent) percent")
             if store.editingTextBoxID != nil {
                 Button("Done") { store.finishTextEditing() }
-                    .fontWeight(.semibold)
-                    .frame(minHeight: 44)
+                    .fontWeight(.semibold).frame(minWidth: 44, minHeight: 44)
                     .accessibilityHint("Finish typing in the text box")
             }
-            Button("Save") {
-                showsSaveStatus = true
-                store.saveNow()
-            }
-            .frame(minWidth: 44, minHeight: 44)
-            .disabled(isNavigating || store.isSaving || !store.canWrite)
-            .accessibilityHint("Save this page on the iPad")
-            Button("Reopen") {
-                showsSaveStatus = true
-                store.reloadSavedPage()
-            }
-            .frame(minWidth: 44, minHeight: 44)
-            .disabled(isNavigating || store.isSaving)
-            .accessibilityHint("Open the saved page")
         }
         .font(.subheadline)
-        .padding(.horizontal, 16)
-        .frame(height: 44)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
         .background(Color(uiColor: .systemBackground))
-    }
-
-    private var pageNavigation: some View {
-        HStack(spacing: 16) {
-            Button("Previous") { onPageChange(pageNumber - 2) }
-                .frame(minWidth: 80, minHeight: 44)
-                .disabled(isNavigating || pageNumber == 1)
-                .accessibilityLabel("Previous page")
-            Spacer(minLength: 0)
-            Text("Page \(pageNumber) of \(pageCount)").font(.subheadline).monospacedDigit()
-            Spacer(minLength: 0)
-            Button("Next") { onPageChange(pageNumber) }
-                .frame(minWidth: 80, minHeight: 44)
-                .disabled(isNavigating || pageNumber == pageCount)
-                .accessibilityLabel("Next page")
-        }
-        .padding(.horizontal, 16)
-        .background(Color(uiColor: .secondarySystemBackground))
     }
 
     private var toolBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                toolButton(.pen, icon: .pen, title: "Pen")
-                toolButton(.highlighter, icon: .marker, title: "Marker")
-                eraserMenu
-                toolButton(.textBox, icon: .text, title: "Text box")
-                toolButton(.rectangle, icon: .rectangle, title: "Rectangle")
-                lassoMenu
+                ForEach(CanvasToolControl.allCases) { control in toolButton(control) }
                 Divider().frame(height: 28).padding(.horizontal, 8)
-                colorPicker
-                Button {
-                    showsToolSettings.toggle()
-                } label: {
-                    VStack(spacing: 3) {
-                        Capsule().frame(width: 22, height: max(2, store.inkWidth / 2))
-                            .frame(height: 22)
-                        Text("Width \(Int(store.inkWidth))").font(.caption2)
-                    }
-                    .frame(width: 56, height: 52)
-                }
-                .accessibilityLabel("Tool settings, width \(Int(store.inkWidth))")
-                .popover(isPresented: $showsToolSettings) { toolSettings }
+                paperMenu
+                appearanceMenu
                 if store.canUndoScratch {
                     Button { store.undoLastScratchErase() } label: {
                         toolLabel(icon: .undo, title: "Undo")
@@ -147,28 +124,47 @@ struct CanvasPrototypeRootView: View {
                         toolLabel(icon: .settings, title: "Selection")
                     }
                     .accessibilityLabel("Selection actions, \(store.selectionSummary)")
-                    .popover(isPresented: $showsSelectionActions) { selectionActions }
+                    .popover(isPresented: $showsSelectionActions) {
+                        CanvasSelectionActionsView(store: store) { showsSelectionActions = false }
+                    }
                 }
             }
             .buttonStyle(.plain)
             .foregroundStyle(Color.primary)
             .padding(.horizontal, 12)
         }
-        .frame(height: 52)
+        .frame(height: 56)
         .background(Color(uiColor: .secondarySystemBackground))
         .overlay(alignment: .bottom) { Divider() }
-        .accessibilityLabel("Page tools")
+        .accessibilityLabel("Notebook tools")
     }
 
-    private func toolButton(_ tool: CanvasTool, icon: CanvasLucideIcon.Kind, title: String) -> some View {
-        Button { selectTool(tool) } label: {
-            toolLabel(icon: icon, title: title)
-                .background(store.tool == tool ? Color.accentColor.opacity(0.12) : Color.clear,
+    private func toolButton(_ control: CanvasToolControl) -> some View {
+        let tool = control.tool(in: store)
+        let selected = control.contains(store.tool)
+        return ZStack {
+            toolLabel(icon: control.icon(in: store), title: control.title)
+                .background(selected ? Color.accentColor.opacity(0.12) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 8))
-                .foregroundStyle(store.tool == tool ? Color.accentColor : Color.primary)
+                .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            CanvasNativeToolControl(
+                label: "\(control.title), \(tool.title)", isSelected: selected,
+                onTap: { selectTool(control.tool(in: store)) },
+                onHold: {
+                    selectTool(control.tool(in: store))
+                    settingsControl = control
+                }
+            )
         }
-        .accessibilityLabel(tool.title)
-        .accessibilityAddTraits(store.tool == tool ? .isSelected : [])
+        .frame(width: 60, height: 52)
+        .popover(isPresented: Binding(
+            get: { settingsControl == control },
+            set: { if !$0, settingsControl == control { settingsControl = nil } }
+        )) {
+            CanvasToolSettingsView(store: store, control: control) { settingsControl = nil }
+        }
     }
 
     private func toolLabel(icon: CanvasLucideIcon.Kind, title: String) -> some View {
@@ -180,204 +176,37 @@ struct CanvasPrototypeRootView: View {
         .contentShape(Rectangle())
     }
 
-    private var eraserMenu: some View {
+    private var paperMenu: some View {
         Menu {
-            Button("Partial eraser") { eraserTool = .partialEraser; selectTool(eraserTool) }
-            Button("Object eraser") { eraserTool = .objectEraser; selectTool(eraserTool) }
-        } label: {
-            toolLabel(icon: .eraser, title: "Eraser ▾")
-                .background(isErasing ? Color.accentColor.opacity(0.12) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 8))
-                .foregroundStyle(isErasing ? Color.accentColor : Color.primary)
-        }
-        .accessibilityLabel("Eraser modes, \(eraserTool.title)")
-        .accessibilityAddTraits(isErasing ? .isSelected : [])
-    }
-
-    private var lassoMenu: some View {
-        Menu {
-            Button("Freehand lasso") { lassoTool = .freehandLasso; selectTool(lassoTool) }
-            Button("Box lasso") { lassoTool = .boxedLasso; selectTool(lassoTool) }
-        } label: {
-            toolLabel(icon: lassoTool == .boxedLasso ? .box : .lasso, title: "Lasso ▾")
-                .background(isSelecting ? Color.accentColor.opacity(0.12) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 8))
-                .foregroundStyle(isSelecting ? Color.accentColor : Color.primary)
-        }
-        .accessibilityLabel("Lasso modes, \(lassoTool.title)")
-        .accessibilityHint("Tap an item to select it. Draw around whole items to select a group. Drag inside the selection to move it. Drag the round handle to resize")
-        .accessibilityAddTraits(isSelecting ? .isSelected : [])
-    }
-
-    private var colorPicker: some View {
-        Menu {
-            ForEach(CanvasColor.allCases, id: \.self) { value in
-                Button(value.title) { store.color = value }
-            }
-        } label: {
-            VStack(spacing: 3) {
-                Circle().fill(color(for: store.color)).frame(width: 22, height: 22)
-                Text(store.color.title).font(.caption2)
-            }
-            .frame(width: 52, height: 52)
-        }
-        .accessibilityLabel("Ink color, \(store.color.title)")
-    }
-
-    private var toolSettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Tool settings").font(.headline).accessibilityAddTraits(.isHeader)
-            HStack {
-                Text("Width")
-                Spacer()
-                Text("\(Int(store.inkWidth))").monospacedDigit()
-            }
-            Slider(value: $store.inkWidth, in: 1...12, step: 1)
-                .accessibilityLabel("Manual ink width")
-            Divider()
-            Toggle("Scratch erase", isOn: Binding(
-                get: { store.page.scratchEraseEnabled },
-                set: { store.setScratchEraseEnabled($0) }
-            ))
-            Text("Scratch over ink, then hold the Pencil down to erase. Text boxes, shapes, and PDF content stay in place.")
-                .font(.footnote).foregroundStyle(.secondary)
-            Button("Done") { showsToolSettings = false }
-                .frame(maxWidth: .infinity, minHeight: 44)
-        }
-        .padding(20)
-        .frame(width: 300)
-        .presentationCompactAdaptation(.popover)
-    }
-
-    private var selectionActions: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Selection").font(.headline).accessibilityAddTraits(.isHeader)
-            Text(store.selectionSummary).font(.footnote).foregroundStyle(.secondary)
-            Text("Drag inside the selection to move it. Drag the round handle to resize it.")
-                .font(.footnote).foregroundStyle(.secondary)
-            Text("Move").font(.subheadline.weight(.semibold))
-            HStack(spacing: 8) {
-                moveButton("Left", x: -12, y: 0)
-                moveButton("Right", x: 12, y: 0)
-            }
-            HStack(spacing: 8) {
-                moveButton("Up", x: 0, y: -12)
-                moveButton("Down", x: 0, y: 12)
-            }
-            Divider()
-            HStack(spacing: 8) {
-                Button("Smaller") { store.scaleSelection(by: 0.9) }
-                    .accessibilityLabel("Reduce selection size")
-                Button("Larger") { store.scaleSelection(by: 1.1) }
-                    .accessibilityLabel("Increase selection size")
-            }
-            .frame(minHeight: 44)
-            Button("Delete selection", role: .destructive) {
-                store.deleteSelection()
-                showsSelectionActions = false
-            }
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .disabled(store.selection.isEmpty)
-            .accessibilityHint("Delete selected ink, text boxes, and shapes. Keep the PDF content unchanged")
-            Button("Clear selection") {
-                store.clearSelection()
-                showsSelectionActions = false
-            }
-            .frame(minHeight: 44)
-        }
-        .buttonStyle(.bordered)
-        .padding(20)
-        .frame(width: 280)
-        .presentationCompactAdaptation(.popover)
-    }
-
-    private func moveButton(_ title: String, x: CGFloat, y: CGFloat) -> some View {
-        Button(title) { store.moveSelection(by: CGPoint(x: x, y: y)) }
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .accessibilityLabel("Move selection \(title.lowercased())")
-    }
-
-    private func textBoxChooser(listHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text("Choose a text box")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer(minLength: 0)
-                Button("Cancel") { store.cancelTextBoxChoice() }
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityHint("Close the text box list")
-            }
-            Text("Tap a preview to highlight its box on the page.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            ScrollView(.vertical) {
-                VStack(spacing: 8) {
-                    ForEach(store.textBoxCandidates) { box in
-                        textBoxChoiceRow(box)
+            Section("Current page: \(store.page.paper.title)") {
+                ForEach(CanvasPaper.allCases, id: \.self) { paper in
+                    Button { store.setPaper(paper) } label: {
+                        Text(paper == store.page.paper ? "\(paper.title) · Selected" : paper.title)
                     }
                 }
             }
-            .frame(maxHeight: listHeight)
-            Button {
-                if let id = store.previewTextBoxID { store.chooseTextBox(id) }
-            } label: {
-                Text(store.textBoxChoiceStartsEditing ? "Edit text box" : "Select text box")
-                    .frame(maxWidth: .infinity, minHeight: 44)
+            Section("New pages: \(defaultPaper.title)") {
+                ForEach(CanvasPaper.allCases, id: \.self) { paper in
+                    Button { onDefaultPaperChange(paper) } label: {
+                        Text(paper == defaultPaper ? "\(paper.title) · Selected" : paper.title)
+                    }
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(store.previewTextBoxID == nil)
-            .accessibilityHint(store.textBoxChoiceStartsEditing
-                ? "Open the keyboard for the highlighted box only"
-                : "Select the highlighted box only without opening the keyboard")
-        }
-        .padding(12)
-        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color(uiColor: .separator))
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Text boxes near this point")
+        } label: { toolLabel(icon: .notebook, title: "Paper") }
+        .disabled(isNavigating || isChangingPaper || isAddingPage || !store.canWrite)
+        .accessibilityLabel("Paper, current page \(store.page.paper.title), new pages \(defaultPaper.title)")
     }
 
-    private func textBoxChoiceRow(_ box: CanvasTextBox) -> some View {
-        let isPreviewed = store.previewTextBoxID == box.id
-        let number = (store.page.textBoxes.firstIndex(where: { $0.id == box.id }) ?? 0) + 1
-        let preview = box.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = preview.isEmpty ? "Empty text box" : preview
-        let left = Int(box.frame.minX / CanvasPageGeometry.size.width * 100)
-        let top = Int(box.frame.minY / CanvasPageGeometry.size.height * 100)
-        return Button { store.previewTextBoxChoice(box.id) } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Box \(number)").fontWeight(.semibold)
-                    Spacer(minLength: 0)
-                    if isPreviewed { Text("Preview").fontWeight(.semibold) }
+    private var appearanceMenu: some View {
+        Menu {
+            ForEach(CanvasAppearance.allCases, id: \.self) { value in
+                Button { onAppearanceChange(value) } label: {
+                    Text(value == appearance ? "\(value.title) · Selected" : value.title)
                 }
-                .font(.caption)
-                Text(text)
-                    .font(.body)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-                Text("Left \(left)% · Top \(top)%")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(12)
-            .background(isPreviewed ? Color.accentColor.opacity(0.12) : Color(uiColor: .secondarySystemBackground),
-                        in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(isPreviewed ? Color.accentColor : Color.clear, lineWidth: 2)
-            }
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.primary)
-        .accessibilityLabel("Box \(number), \(text), \(left) percent from left, \(top) percent from top")
-        .accessibilityHint("Preview this box on the page before you confirm")
-        .accessibilityAddTraits(isPreviewed ? .isSelected : [])
+        } label: { toolLabel(icon: .settings, title: appearance.title) }
+        .accessibilityLabel("Appearance, \(appearance.title)")
+        .accessibilityHint("Change page and control appearance. Keep saved ink colors")
     }
 
     private var saveStatus: some View {
@@ -396,21 +225,28 @@ struct CanvasPrototypeRootView: View {
         return store.actionMessage ?? store.saveStatus
     }
 
-    private var isErasing: Bool { store.tool == .partialEraser || store.tool == .objectEraser }
-    private var isSelecting: Bool { store.tool == .freehandLasso || store.tool == .boxedLasso || store.tool == .selection }
-
-    private func color(for value: CanvasColor) -> Color {
-        switch value {
-        case .black: .black
-        case .blue: .blue
-        case .red: .red
-        case .green: .green
-        }
-    }
-
     private func selectTool(_ tool: CanvasTool) {
         store.cancelTextBoxChoice()
         if tool != .textBox { store.finishTextEditing() }
         store.tool = tool
+    }
+}
+
+/// Each row observes its page even when that page is outside the visible canvas.
+private struct CanvasPageSaveErrorRow: View {
+    @ObservedObject var store: CanvasPageStore
+    let pageNumber: Int
+
+    var body: some View {
+        if store.hasSaveError {
+            Text("Page \(pageNumber): \(store.saveStatus)")
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color(uiColor: .secondarySystemBackground))
+                .accessibilityLabel("Page \(pageNumber) save error: \(store.saveStatus)")
+        }
     }
 }

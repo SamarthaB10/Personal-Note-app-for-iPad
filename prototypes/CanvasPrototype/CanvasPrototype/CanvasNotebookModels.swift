@@ -11,6 +11,35 @@ struct CanvasNotebook: Codable, Identifiable {
     var pageIDs: [UUID]
     var createdAt: Date
     var coverRevision: Int
+    var defaultPaper: CanvasPaper = .blank
+
+    static let maximumPageCount = 300
+
+    init(id: UUID, title: String, folderID: CanvasFolderID, pageIDs: [UUID],
+         createdAt: Date, coverRevision: Int, defaultPaper: CanvasPaper = .blank) {
+        self.id = id
+        self.title = title
+        self.folderID = folderID
+        self.pageIDs = pageIDs
+        self.createdAt = createdAt
+        self.coverRevision = coverRevision
+        self.defaultPaper = defaultPaper
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, folderID, pageIDs, createdAt, coverRevision, defaultPaper
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        folderID = try values.decode(CanvasFolderID.self, forKey: .folderID)
+        pageIDs = try values.decode([UUID].self, forKey: .pageIDs)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        coverRevision = try values.decode(Int.self, forKey: .coverRevision)
+        defaultPaper = try values.decodeIfPresent(CanvasPaper.self, forKey: .defaultPaper) ?? .blank
+    }
 }
 
 struct CanvasNotebookLibrary: Codable {

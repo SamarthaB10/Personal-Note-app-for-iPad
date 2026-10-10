@@ -7,13 +7,24 @@ import PencilKit
 final class CanvasPageStore: ObservableObject {
     @Published private(set) var page: CanvasPageData
     @Published private(set) var drawingRevision = 0
-    @Published var tool: CanvasTool = .pen {
-        didSet {
-            if tool != oldValue { cancelTextBoxChoice() }
-        }
+    var tool: CanvasTool {
+        get { toolSettings.tool }
+        set { toolSettings.tool = newValue }
     }
-    @Published var color: CanvasColor = .black
-    @Published var inkWidth: CGFloat = 3
+    var color: CanvasColor {
+        get { toolSettings.color }
+        set { toolSettings.color = newValue }
+    }
+    var inkWidth: CGFloat {
+        get { toolSettings.inkWidth }
+        set { toolSettings.setWidth(newValue) }
+    }
+    var shapeKind: CanvasShapeKind {
+        get { toolSettings.shapeKind }
+        set { toolSettings.shapeKind = newValue }
+    }
+    var rememberedEraserTool: CanvasTool { toolSettings.rememberedEraserTool }
+    var rememberedLassoTool: CanvasTool { toolSettings.rememberedLassoTool }
     @Published private(set) var saveStatus = "Loading saved page…"
     @Published private(set) var actionMessage: String?
     @Published private(set) var isSaving = false
@@ -32,6 +43,8 @@ final class CanvasPageStore: ObservableObject {
     var onFlushCanvasDrawing: (() -> Void)?
     let showsPrototypeBackground: Bool
 
+    private let toolSettings = CanvasToolSettings.shared
+    private var toolSubscriptions: Set<AnyCancellable> = []
     private let fileURL: URL?
     private let saveQueue: DispatchQueue
     private let onSaved: ((CanvasPageData) -> Void)?
@@ -93,6 +106,8 @@ final class CanvasPageStore: ObservableObject {
             persist()
         }
         drawingRevision = 1
+        observeToolSettings()
+        convertLoadedShapesToInk()
     }
 
     /// Notebook pages arrive from the validated local store, without prototype fixtures.
@@ -106,6 +121,18 @@ final class CanvasPageStore: ObservableObject {
         validatesSavedFile = true
         saveStatus = "Saved page opened locally."
         drawingRevision = 1
+        observeToolSettings()
+        convertLoadedShapesToInk()
+    }
+
+    private func observeToolSettings() {
+        toolSettings.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }.store(in: &toolSubscriptions)
+        toolSettings.$tool.dropFirst().removeDuplicates().sink { [weak self] tool in
+            self?.cancelTextBoxChoice()
+            if tool != .textBox { self?.finishTextEditing() }
+        }.store(in: &toolSubscriptions)
     }
 
     /// The library waits for this write before it closes a notebook.
@@ -122,7 +149,8 @@ final class CanvasPageStore: ObservableObject {
             // Ink can finish while the write is in progress. Save that change as well.
             if page.inkDrawingData == snapshot.inkDrawingData,
                page.textBoxes == snapshot.textBoxes, page.shapes == snapshot.shapes,
-               page.scratchEraseEnabled == snapshot.scratchEraseEnabled { return true }
+               page.scratchEraseEnabled == snapshot.scratchEraseEnabled,
+               page.paper == snapshot.paper { return true }
         }
     }
 
@@ -197,7 +225,7 @@ final class CanvasPageStore: ObservableObject {
         }
         isSaving = false
         do {
-            page = try Self.decodeAndValidatePage(from: Data(contentsOf: fileURL))
+            page = try Self.convertingShapesToInk(in: Self.decodeAndValidatePage(from: Data(contentsOf: fileURL)))
             canSave = true
             drawingRevision += 1
             scratchUndoStack = []
@@ -205,6 +233,7 @@ final class CanvasPageStore: ObservableObject {
             clearSelection()
             saveStatus = "Saved page reopened locally."
             actionMessage = saveStatus
+            persist()
         } catch {
             canSave = false
             saveStatus = "Saved page data is invalid. The file is preserved."
@@ -224,6 +253,15 @@ final class CanvasPageStore: ObservableObject {
     /// Flushes ink when the scene becomes inactive without changing button feedback.
     func saveLifecycleSnapshot() {
         onFlushCanvasDrawing?()
+        persist()
+    }
+
+    func setPaper(_ paper: CanvasPaper) {
+        guard page.paper != paper else { return }
+        onFlushCanvasDrawing?()
+        var updated = page
+        updated.paper = paper
+        page = updated
         persist()
     }
 
@@ -314,18 +352,61 @@ final class CanvasPageStore: ObservableObject {
         textBoxChoiceIntent = intent
     }
 
-    func addRectangle(from start: CGPoint, to end: CGPoint) {
-        let frame = CGRect(
-            x: min(start.x, end.x),
-            y: min(start.y, end.y),
-            width: abs(end.x - start.x),
-            height: abs(end.y - start.y)
-        ).insetBy(dx: -1, dy: -1)
-        guard frame.width >= 12, frame.height >= 12 else { return }
-        var updated = page
-        updated.shapes.append(CanvasShape(frame: frame, color: color, lineWidth: inkWidth))
-        page = updated
-        persist()
+    /// Appends one complete ink stroke. The native erasers need no shape-specific path.
+    func addShape(from start: CGPoint, to end: CGPoint, kind: CanvasShapeKind? = nil) {
+        guard canWrite else { return }
+        let kind = kind ?? shapeKind
+        let locations = CanvasShapeInk.locations(kind: kind, from: start, to: end)
+        guard let first = locations.first,
+              locations.contains(where: { hypot($0.x - first.x, $0.y - first.y) >= 12 }),
+              (kind == .arrow || kind == .line
+               || (abs(end.x - start.x) >= 12 && abs(end.y - start.y) >= 12)),
+              let stroke = CanvasShapeInk.stroke(locations: locations, color: color,
+                                                width: inkWidth, smooth: kind == .circle || kind == .ellipse) else { return }
+        onFlushCanvasDrawing?()
+        var strokes = drawing.strokes
+        strokes.append(stroke)
+        updateDrawing(PKDrawing(strokes: strokes))
+    }
+
+    /// Convert only a fully validated loaded page. Failed conversion preserves its file.
+    private func convertLoadedShapesToInk() {
+        guard canSave, !page.shapes.isEmpty else { return }
+        do {
+            let converted = try Self.convertingShapesToInk(in: page)
+            page = converted
+            drawingRevision += 1
+            persist()
+        } catch {
+            canSave = false
+            saveStatus = "Saved shapes could not become ink. The file is preserved."
+        }
+    }
+
+    nonisolated private static func convertingShapesToInk(in page: CanvasPageData) throws -> CanvasPageData {
+        try validatePage(page)
+        guard !page.shapes.isEmpty else { return page }
+        let existing = try PKDrawing(data: page.inkDrawingData)
+        var strokes = existing.strokes
+        for shape in page.shapes {
+            // The legacy model supports rectangles only. Keep its exact frame and width.
+            let locations = CanvasShapeInk.locations(kind: .rectangle, from: shape.frame.origin,
+                                                     to: CGPoint(x: shape.frame.maxX, y: shape.frame.maxY))
+            guard let stroke = CanvasShapeInk.stroke(locations: locations, color: shape.color,
+                                                     width: shape.lineWidth) else {
+                throw SavedPageError.invalidObjects
+            }
+            strokes.append(stroke)
+        }
+        var converted = page
+        let ink = PKDrawing(strokes: strokes).dataRepresentation()
+        guard try PKDrawing(data: ink).strokes.count == strokes.count else {
+            throw SavedPageError.invalidInk
+        }
+        converted.inkDrawingData = ink
+        converted.shapes = []
+        try validatePage(converted)
+        return converted
     }
 
     func updateTextBox(_ id: UUID, text: String) {
@@ -342,6 +423,20 @@ final class CanvasPageStore: ObservableObject {
 
     func updateLassoPreview(_ points: [CGPoint]) {
         lassoPreview = points
+    }
+
+    /// Initial lasso contact selects one complete stroke for immediate movement.
+    func selectTouchedInk(at point: CGPoint) -> Bool {
+        onFlushCanvasDrawing?()
+        let touched = CanvasSelectionGeometry.selectInk(at: point, drawing: drawing)
+        guard !touched.isEmpty else { return false }
+        cancelTextBoxChoice()
+        finishTextEditing()
+        selection = touched
+        selectionOutline = []
+        lassoPreview = []
+        selectionBounds = CanvasSelectionGeometry.bounds(of: selection, in: page)
+        return true
     }
 
     func selectObject(at point: CGPoint) {
@@ -395,8 +490,6 @@ final class CanvasPageStore: ObservableObject {
 
     func directSelectionContains(_ point: CGPoint) -> Bool {
         guard !selection.isEmpty, textBoxCandidates.isEmpty else { return false }
-        if !selectionOutline.isEmpty,
-           !CanvasSelectionGeometry.contains(point, in: selectionOutline) { return false }
         return CanvasSelectionGeometry.directSelectionContains(point, selection: selection, in: page)
     }
 
@@ -638,6 +731,11 @@ final class CanvasPageStore: ObservableObject {
 
     nonisolated static func decodeAndValidatePage(from data: Data) throws -> CanvasPageData {
         let page = try JSONDecoder().decode(CanvasPageData.self, from: data)
+        try validatePage(page)
+        return page
+    }
+
+    nonisolated private static func validatePage(_ page: CanvasPageData) throws {
         let objectIDs = page.textBoxes.map(\.id) + page.shapes.map(\.id)
         guard Set(objectIDs).count == objectIDs.count,
               page.textBoxes.allSatisfy({ box in
@@ -653,7 +751,6 @@ final class CanvasPageStore: ObservableObject {
         } else {
             _ = try PKDrawing(data: page.inkDrawingData)
         }
-        return page
     }
 
     nonisolated private static func isValidFrame(_ frame: CGRect) -> Bool {
