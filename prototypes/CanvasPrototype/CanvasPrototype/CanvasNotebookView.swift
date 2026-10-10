@@ -14,6 +14,7 @@ struct CanvasNotebookView: View {
     @State private var isAddingPage = false
     @State private var isChangingPaper = false
     @State private var isMovingNotebook = false
+    @State private var isDeletingPage = false
     @State private var navigationError: String?
     @State private var scrollRequest: CanvasNotebookScrollRequest?
     @State private var zoomPercent = 100
@@ -70,6 +71,19 @@ struct CanvasNotebookView: View {
             }
             if !entries.isEmpty {
                 let activeIndex = min(pageIndex, entries.count - 1)
+                Button("Delete Current Page", role: .destructive) {
+                    guard !isDeletingPage else { return }
+                    isDeletingPage = true
+                    let id = entries[activeIndex].id
+                    Task {
+                        if await library.movePageToTrash(id, in: notebook.id) {
+                            pageIndex = min(activeIndex, max(0, currentNotebook.pageIDs.count - 1))
+                        } else { navigationError = library.errorMessage }
+                        isDeletingPage = false
+                    }
+                }
+                .disabled(currentNotebook.pageIDs.count <= 1 || isDeletingPage || isNavigating || isAddingPage || isChangingPaper || isMovingNotebook || library.isChangingTrash)
+                .accessibilityHint("Move this page to Trash. Keep at least one page.")
                 CanvasPrototypeRootView(
                     store: entries[activeIndex].store, pages: entries,
                     notebookTitle: currentNotebook.title,
@@ -87,7 +101,7 @@ struct CanvasNotebookView: View {
                     onDefaultPaperChange: setDefaultPaper,
                     onAppearanceChange: { appearanceValue = $0.rawValue }
                 )
-                .allowsHitTesting(!isNavigating)
+                .allowsHitTesting(!isNavigating && !library.isChangingTrash)
             } else {
                 Text("The notebook pages are unavailable. Saved files are preserved.")
                     .padding()
@@ -100,6 +114,7 @@ struct CanvasNotebookView: View {
                 importRequest = nil
             }
         }
+        .disabled(library.isChangingTrash)
         .preferredColorScheme(appearance.colorScheme)
         .onChange(of: appearance, initial: true) { _, value in
             CanvasToolSettings.shared.applyAppearance(value)

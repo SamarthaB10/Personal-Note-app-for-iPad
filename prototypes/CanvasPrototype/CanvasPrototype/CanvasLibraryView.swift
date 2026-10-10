@@ -14,6 +14,7 @@ struct CanvasLibraryView: View {
     @State private var selectedFolderID: CanvasFolderID? = .unfiled
     @State private var showsCreateFolder = false
     @State private var isMoving = false
+    @State private var showsTrash = false
 
     private var visibleNotebooks: [CanvasNotebook] {
         selectedFolderID.map { store.notebooks(in: $0) } ?? []
@@ -32,6 +33,8 @@ struct CanvasLibraryView: View {
                 library
             }
         }
+        .disabled(store.isChangingTrash)
+        .sheet(isPresented: $showsTrash) { CanvasTrashView(store: store) }
         .tint(.blue)
         .preferredColorScheme((CanvasAppearance(rawValue: appearanceValue) ?? .light).colorScheme)
         .alert("Import complete", isPresented: Binding(
@@ -97,9 +100,12 @@ struct CanvasLibraryView: View {
     }
 
     private var folderList: some View {
-        CanvasFolderListView(store: store, selectedFolderID: selectedFolderID,
-                             onSelect: { selectedFolderID = $0 },
-                             onCreate: { showsCreateFolder = true })
+        VStack {
+            Button("Trash (\(store.trash.count))") { showsTrash = true }.frame(minHeight: 44)
+            CanvasFolderListView(store: store, selectedFolderID: selectedFolderID,
+                                 onSelect: { selectedFolderID = $0 },
+                                 onCreate: { showsCreateFolder = true })
+        }
     }
 
     private var folderOverview: some View {
@@ -122,6 +128,10 @@ struct CanvasLibraryView: View {
                     }.frame(minHeight: 44)
                 }
                 .accessibilityLabel("Return to folder list")
+                if case .custom(let id) = selectedFolderID,
+                   let folder = store.folders.first(where: { $0.id == id }) {
+                    CanvasDeleteFolderButton(store: store, folder: folder) { selectedFolderID = nil }
+                }
                 Text(store.folderName(for: selectedFolderID ?? .unfiled))
                     .font(.largeTitle.weight(.bold)).accessibilityAddTraits(.isHeader)
                 Text(visibleNotebooks.isEmpty ? "Create a notebook to start writing." : "\(visibleNotebooks.count) notebooks")
@@ -160,6 +170,8 @@ struct CanvasLibraryView: View {
                                 .accessibilityLabel("\(notebook.title), \(notebook.pageIDs.count) pages")
                                 .accessibilityHint("Open this notebook. Touch and hold for notebook actions.")
                                 .contextMenu {
+                                    Button("Delete Notebook", role: .destructive) { deleteNotebook(notebook) }
+                                        .disabled(isMoving || isOpening)
                                     Menu("Move to folder") {
                                         moveMenu(for: notebook)
                                     }
@@ -176,6 +188,15 @@ struct CanvasLibraryView: View {
 
     private func startLibraryImport() {
         importDestination = CanvasLibraryImportRequest(folderID: selectedFolderID ?? .unfiled)
+    }
+
+    private func deleteNotebook(_ notebook: CanvasNotebook) {
+        guard !isMoving, !isOpening else { return }
+        isMoving = true
+        Task {
+            _ = await store.moveNotebookToTrash(notebook.id)
+            isMoving = false
+        }
     }
 
     private func moveMenu(for notebook: CanvasNotebook) -> some View {

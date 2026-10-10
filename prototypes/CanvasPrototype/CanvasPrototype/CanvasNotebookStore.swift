@@ -6,6 +6,8 @@ import UIKit
 @MainActor
 final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
     @Published private(set) var notebooks: [CanvasNotebook] = []
+    @Published private(set) var trash: [CanvasTrashRecord] = []
+    @Published private(set) var isChangingTrash = false
     @Published private(set) var folders: [CanvasFolder] = []
     @Published private(set) var isLoading = true
     @Published private(set) var isCreating = false
@@ -72,6 +74,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         case .success(let library):
             notebooks = library.notebooks
             folders = library.folders
+            trash = library.trash
             libraryRevision = library.revision
             hasPublishedIndex = FileManager.default.fileExists(atPath: Self.indexURL(in: directoryURL).path)
             storageIsValid = true
@@ -99,7 +102,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         }
         let notebook = CanvasNotebook(id: UUID(), title: title, folderID: folderID,
                                       pageIDs: (0..<7).map { _ in UUID() }, createdAt: Date(), coverRevision: 0)
-        let library = CanvasNotebookLibrary(notebooks: notebooks + [notebook], folders: folders, revision: libraryRevision + 1)
+        let library = CanvasNotebookLibrary(notebooks: notebooks + [notebook], folders: folders, revision: libraryRevision + 1, trash: trash)
         let canCreateIndex = !hasPublishedIndex
         let result: Result<Void, Error> = await withCheckedContinuation { continuation in
             storageQueue.async {
@@ -189,7 +192,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         notebook.sources.append(publishedSource)
         var updated = notebooks
         if let existingIndex { updated[existingIndex] = notebook } else { updated.append(notebook) }
-        let library = CanvasNotebookLibrary(notebooks: updated, folders: folders, revision: libraryRevision + 1)
+        let library = CanvasNotebookLibrary(notebooks: updated, folders: folders, revision: libraryRevision + 1, trash: trash)
         let allowMissing = !hasPublishedIndex
         let notebookID = notebook.id
         let sourceRecord = publishedSource
@@ -296,7 +299,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         }
         let folder = CanvasFolder(id: UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines))
         let library = CanvasNotebookLibrary(notebooks: notebooks, folders: folders + [folder],
-                                            revision: libraryRevision + 1)
+                                            revision: libraryRevision + 1, trash: trash)
         guard await saveMembership(library) else { return nil }
         folders.append(folder)
         return folder
@@ -315,7 +318,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         var updatedNotebooks = notebooks
         updatedNotebooks[index].folderID = folderID
         let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders,
-                                            revision: libraryRevision + 1)
+                                            revision: libraryRevision + 1, trash: trash)
         guard await saveMembership(library) else { return false }
         // Keep any cover revision that changed while the index write was queued.
         notebooks[index].folderID = folderID
@@ -410,7 +413,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                                   textBoxes: [], shapes: [], scratchEraseEnabled: true,
                                   paper: updatedNotebooks[index].defaultPaper)
         updatedNotebooks[index].pageIDs.insert(pageID, at: insertionIndex)
-        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders, revision: libraryRevision + 1)
+        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders, revision: libraryRevision + 1, trash: trash)
         let fileURL = Self.pageURL(pageID, notebookID: notebookID, in: directoryURL)
         let result: Result<Void, Error> = await withCheckedContinuation { continuation in
             storageQueue.async {
@@ -430,7 +433,11 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         switch result {
         case .success:
             libraryRevision = library.revision
-            let store = CanvasPageStore(page: page, fileURL: fileURL, saveQueue: storageQueue)
+            let store = CanvasPageStore(page: page, fileURL: fileURL, saveQueue: storageQueue,
+                onSaved: { [weak self] snapshot in
+                    guard let self, self.notebooks.first(where: { $0.id == notebookID })?.pageIDs.first == pageID else { return }
+                    self.updateCover(notebookID: notebookID, page: snapshot)
+                })
             pageStores[notebookID]?[pageID] = store
             notebooks[index].pageIDs.insert(pageID, at: insertionIndex)
             errorMessage = nil
@@ -452,7 +459,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         guard notebooks[index].defaultPaper != paper else { return true }
         var updatedNotebooks = notebooks
         updatedNotebooks[index].defaultPaper = paper
-        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders, revision: libraryRevision + 1)
+        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks, folders: folders, revision: libraryRevision + 1, trash: trash)
         let succeeded: Bool = await withCheckedContinuation { continuation in
             storageQueue.async {
                 do {
@@ -519,6 +526,8 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         }
         switch result {
         case .success(let pages):
+            // A Trash mutation can finish while the read is queued. Never cache removed pages.
+            guard notebooks.first(where: { $0.id == id })?.pageIDs == notebook.pageIDs else { return nil }
             // An overlapping open request can reuse the first completed stores.
             if let cached = pageStores[id] { return notebook.pageIDs.compactMap { cached[$0] } }
             var stores: [UUID: CanvasPageStore] = [:]
@@ -526,7 +535,8 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                 stores[pageID] = CanvasPageStore(page: page,
                     fileURL: Self.pageURL(pageID, notebookID: id, in: directoryURL), saveQueue: storageQueue,
                     onSaved: { [weak self] snapshot in
-                        if pageID == notebook.pageIDs.first { self?.updateCover(notebookID: id, page: snapshot) }
+                        guard let self, self.notebooks.first(where: { $0.id == id })?.pageIDs.first == pageID else { return }
+                        self.updateCover(notebookID: id, page: snapshot)
                     })
             }
             pageStores[id] = stores
@@ -587,7 +597,7 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
     }
 
     private func updateCover(notebookID: UUID, page: CanvasPageData) {
-        guard let directoryURL else { return }
+        guard let directoryURL, notebooks.contains(where: { $0.id == notebookID }) else { return }
         if let previous = coverPages[notebookID],
            previous.inkDrawingData == page.inkDrawingData,
            previous.textBoxes == page.textBoxes, previous.shapes == page.shapes,
@@ -598,7 +608,8 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
         let coverURL = Self.notebookURL(notebookID, in: directoryURL).appendingPathComponent("cover.png")
         // A short quiet period joins several completed saves into one cover request.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self, self.coverRequests[notebookID] == request else { return }
+            guard let self, self.coverRequests[notebookID] == request,
+                  self.notebooks.contains(where: { $0.id == notebookID }) else { return }
             self.coverQueue.async { [weak self] in
                 do {
                     let data = try Self.coverData(for: page, notebookDirectory: Self.notebookURL(notebookID, in: directoryURL))
@@ -613,6 +624,414 @@ final class CanvasNotebookStore: ObservableObject, CanvasImportPublishing {
                         self?.errorMessage = "The page was saved, but its notebook cover could not be updated."
                     }
                 }
+            }
+        }
+    }
+
+    /// The UI must block editor input while isChangingTrash is true.
+    func movePageToTrash(_ pageID: UUID, in notebookID: UUID) async -> Bool {
+        await changeTrash {
+            guard let index = self.notebooks.firstIndex(where: { $0.id == notebookID }),
+                  let position = self.notebooks[index].pageIDs.firstIndex(of: pageID) else { return false }
+            guard self.notebooks[index].pageIDs.count > 1 else {
+                self.errorMessage = "Keep at least one page in the notebook."
+                return false
+            }
+            guard await self.flushCachedPages([notebookID]) else { return false }
+            var library = self.trashSnapshot()
+            let record = CanvasTrashRecord(content: .page(CanvasTrashedPage(
+                notebookID: notebookID, notebookTitle: library.notebooks[index].title,
+                pageID: pageID, position: position)))
+            library.notebooks[index].pageIDs.remove(at: position)
+            library.trash.append(record)
+            guard await self.publishTrash(library) else { return false }
+            self.pageStores[notebookID]?[pageID]?.retireForTrash()
+            self.pageStores[notebookID]?.removeValue(forKey: pageID)
+            self.coverRequests[notebookID, default: 0] += 1
+            self.coverPages[notebookID] = nil
+            if let first = library.notebooks[index].pageIDs.first,
+               let page = self.pageStores[notebookID]?[first]?.page {
+                self.updateCover(notebookID: notebookID, page: page)
+            }
+            return true
+        }
+    }
+
+    func moveNotebookToTrash(_ notebookID: UUID) async -> Bool {
+        await changeTrash {
+            guard self.notebooks.contains(where: { $0.id == notebookID }),
+                  await self.flushCachedPages([notebookID]) else { return false }
+            var library = self.trashSnapshot()
+            guard let index = library.notebooks.firstIndex(where: { $0.id == notebookID }) else { return false }
+            library.trash.append(CanvasTrashRecord(content: .notebook(library.notebooks.remove(at: index))))
+            guard await self.publishTrash(library) else { return false }
+            self.retireNotebookCache(notebookID)
+            return true
+        }
+    }
+
+    /// Call only from the native folder confirmation action. Unfiled cannot be deleted.
+    func moveFolderToTrash(_ folderID: UUID, confirmed: Bool) async -> Bool {
+        guard confirmed else { return false }
+        return await changeTrash {
+            guard self.folders.contains(where: { $0.id == folderID }) else { return false }
+            let ids = self.notebooks(in: .custom(folderID)).map(\.id)
+            guard await self.flushCachedPages(ids) else { return false }
+            var library = self.trashSnapshot()
+            guard let index = library.folders.firstIndex(where: { $0.id == folderID }) else { return false }
+            let children = library.notebooks.filter { $0.folderID == .custom(folderID) }
+            library.trash.append(CanvasTrashRecord(content: .folder(library.folders.remove(at: index), children)))
+            library.notebooks.removeAll { $0.folderID == .custom(folderID) }
+            guard await self.publishTrash(library) else { return false }
+            ids.forEach(self.retireNotebookCache)
+            return true
+        }
+    }
+
+    func restoreFromTrash(_ recordID: UUID) async -> Bool {
+        await changeTrash {
+            var library = self.trashSnapshot()
+            guard let index = library.trash.firstIndex(where: { $0.id == recordID }),
+                  !library.trash[index].deletionPending else { return false }
+            let record = library.trash[index]
+            switch record.content {
+            case .page(let page):
+                guard await self.flushCachedPages([page.notebookID]) else { return false }
+                guard let notebookIndex = library.notebooks.firstIndex(where: { $0.id == page.notebookID }) else {
+                    self.errorMessage = "Restore the notebook first."
+                    return false
+                }
+                guard library.notebooks[notebookIndex].pageIDs.count < CanvasNotebook.maximumPageCount else {
+                    self.errorMessage = "The notebook has 300 pages. Move a page to Trash before you restore this page."
+                    return false
+                }
+                library.notebooks[notebookIndex].pageIDs.insert(page.pageID,
+                    at: min(page.position, library.notebooks[notebookIndex].pageIDs.count))
+            case .notebook(var notebook):
+                if !self.containsFolder(notebook.folderID) { notebook.folderID = .unfiled }
+                notebook.title = self.restoredNotebookTitle(notebook, in: library.notebooks)
+                library.notebooks.append(notebook)
+            case .folder(var folder, let children):
+                // Preserve the restored group if its old name was used again.
+                let original = folder.name
+                var suffix = 1
+                while library.folders.contains(where: {
+                    $0.name.compare(folder.name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                }) {
+                    folder.name = "\(original) (Restored \(suffix))"
+                    suffix += 1
+                }
+                library.folders.append(folder)
+                for var notebook in children {
+                    notebook.title = self.restoredNotebookTitle(notebook, in: library.notebooks)
+                    library.notebooks.append(notebook)
+                }
+            }
+            guard record.notebooks.allSatisfy({ $0.pageIDs.count <= CanvasNotebook.maximumPageCount }) else {
+                self.errorMessage = "A restored notebook cannot have more than 300 pages."
+                return false
+            }
+            // Validate files before publishing restored membership; never write page contents here.
+            guard await self.validateRestoredFiles(record, library: library) else { return false }
+            library.trash.remove(at: index)
+            guard await self.publishTrash(library) else { return false }
+            // Drop the whole cache so a restored page is included on the next open.
+            if case .page(let page) = record.content {
+                self.retireNotebookCache(page.notebookID)
+                _ = await self.openNotebook(page.notebookID)
+            }
+            return true
+        }
+    }
+
+    /// Persist a non-restorable state before cleanup. Retry that state after a file error.
+    func deletePermanently(_ recordID: UUID, confirmed: Bool) async -> Bool {
+        guard confirmed else { return false }
+        return await changeTrash {
+            guard let record = self.trash.first(where: { $0.id == recordID }) else { return false }
+            let notebookIDs = Set(record.notebooks.map(\.id))
+            // A page in Trash remains owned by its notebook. Remove it with that notebook.
+            let dependentIDs = Set(self.trash.compactMap { other -> UUID? in
+                if case .page(let page) = other.content, notebookIDs.contains(page.notebookID) { return other.id }
+                return nil
+            }).union([recordID])
+            var library = self.trashSnapshot()
+            // Save exact cleanup paths before page files can disappear. Retry uses this manifest.
+            if !record.deletionPending {
+                do {
+                    let before = try await self.ownedResourceReferences(library)
+                    var remaining = library
+                    remaining.trash.removeAll { dependentIDs.contains($0.id) }
+                    let retained = try await self.ownedResourceReferences(remaining)
+                        .union(remaining.trash.flatMap { $0.pendingOwnedResources ?? [] })
+                    let cleanup = before.subtracting(retained)
+                    for resource in cleanup { try resource.validate() }
+                    guard let index = library.trash.firstIndex(where: { $0.id == recordID }) else { return false }
+                    library.trash[index].pendingOwnedResources = Array(cleanup)
+                } catch {
+                    self.errorMessage = "Source references could not be checked. No files were removed."
+                    return false
+                }
+            }
+            if record.deletionPending {
+                do {
+                    var remaining = library
+                    remaining.trash.removeAll { dependentIDs.contains($0.id) }
+                    let retained = try await self.ownedResourceReferences(remaining)
+                        .union(remaining.trash.flatMap { $0.pendingOwnedResources ?? [] })
+                    for index in library.trash.indices where dependentIDs.contains(library.trash[index].id) {
+                        library.trash[index].pendingOwnedResources = library.trash[index].pendingOwnedResources?
+                            .filter { !retained.contains($0) }
+                    }
+                } catch {
+                    self.errorMessage = "Source references could not be checked. Permanent deletion stays pending."
+                    return false
+                }
+            }
+            for index in library.trash.indices where dependentIDs.contains(library.trash[index].id) {
+                library.trash[index].deletionPending = true
+            }
+            guard await self.publishTrash(library) else { return false }
+            notebookIDs.forEach(self.retireNotebookCache)
+            // Covers have a separate queue. Drain it before removing owned cover files.
+            await withCheckedContinuation { continuation in
+                self.coverQueue.async { continuation.resume() }
+            }
+            let records = self.trash.filter { dependentIDs.contains($0.id) }
+            guard let directoryURL = self.directoryURL else { return false }
+            let succeeded: Bool = await withCheckedContinuation { continuation in
+                self.storageQueue.async {
+                    do {
+                        var urls = Set<URL>()
+                        for item in records {
+                            if case .page(let page) = item.content {
+                                urls.insert(Self.pageURL(page.pageID, notebookID: page.notebookID, in: directoryURL))
+                            }
+                            for notebook in item.notebooks {
+                                for pageID in notebook.pageIDs {
+                                    urls.insert(Self.pageURL(pageID, notebookID: notebook.id, in: directoryURL))
+                                }
+                                urls.insert(Self.notebookURL(notebook.id, in: directoryURL).appendingPathComponent("cover.png"))
+                            }
+                        }
+                        for item in records {
+                            for resource in item.pendingOwnedResources ?? [] {
+                                try resource.validate()
+                                let notebookDirectory = Self.notebookURL(resource.notebookID, in: directoryURL)
+                                let sources = notebookDirectory.appendingPathComponent("sources", isDirectory: true)
+                                // Check every owned ancestor. Do not follow a source-directory link.
+                                for parentURL in [directoryURL, notebookDirectory, sources] {
+                                    let values = try parentURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                                    guard values.isDirectory == true, values.isSymbolicLink != true else {
+                                        throw CanvasNotebookStorageError.invalidLibrary
+                                    }
+                                }
+                                urls.insert(sources.appendingPathComponent(resource.fileName))
+                            }
+                        }
+                        // Never remove a directory, unknown file, or referenced source PDF.
+                        for url in urls where FileManager.default.fileExists(atPath: url.path) {
+                            var ancestor = url.deletingLastPathComponent()
+                            while ancestor.path.hasPrefix(directoryURL.path) {
+                                let values = try ancestor.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                                guard values.isDirectory == true, values.isSymbolicLink != true else {
+                                    throw CanvasNotebookStorageError.invalidLibrary
+                                }
+                                if ancestor == directoryURL { break }
+                                ancestor.deleteLastPathComponent()
+                            }
+                            let parent = try url.deletingLastPathComponent().resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                            guard parent.isDirectory == true, parent.isSymbolicLink != true else {
+                                throw CanvasNotebookStorageError.invalidLibrary
+                            }
+                            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                                throw CanvasNotebookStorageError.invalidLibrary
+                            }
+                            try FileManager.default.removeItem(at: url)
+                        }
+                        continuation.resume(returning: true)
+                    } catch { continuation.resume(returning: false) }
+                }
+            }
+            guard succeeded else {
+                self.errorMessage = "Permanent deletion did not finish. Some files may be removed. Use Delete Permanently again to finish."
+                return false
+            }
+            library = self.trashSnapshot()
+            library.trash.removeAll { dependentIDs.contains($0.id) }
+            do {
+                let retained = try await self.ownedResourceReferences(library)
+                Self.removeUnusedSourceRecords(from: &library, retained: retained)
+            } catch {
+                self.errorMessage = "Files were removed, but source records could not be checked. Use Delete Permanently again to finish."
+                return false
+            }
+            guard await self.publishTrash(library) else {
+                self.errorMessage = "Files were removed, but Trash could not be updated. Use Delete Permanently again to finish."
+                return false
+            }
+            return true
+        }
+    }
+
+    private func changeTrash(_ operation: () async -> Bool) async -> Bool {
+        guard storageIsValid, !isLoading else { return false }
+        await acquireIndexMutation()
+        guard pageStores.values.allSatisfy({ stores in
+            stores.values.allSatisfy { $0.onCanPrepareForDestructiveChange?() ?? true }
+        }) else {
+            errorMessage = "Finish writing or the page action. Then try Delete or Restore again."
+            releaseIndexMutation()
+            return false
+        }
+        isChangingTrash = true
+        defer { isChangingTrash = false; releaseIndexMutation() }
+        let succeeded = await operation()
+        if !succeeded, errorMessage == nil { errorMessage = "The Trash change could not be completed. Saved files are preserved." }
+        return succeeded
+    }
+
+    private func trashSnapshot() -> CanvasNotebookLibrary {
+        CanvasNotebookLibrary(notebooks: notebooks, folders: folders,
+                              revision: libraryRevision + 1, trash: trash)
+    }
+
+    private func publishTrash(_ library: CanvasNotebookLibrary) async -> Bool {
+        guard await saveMembership(library) else { return false }
+        notebooks = library.notebooks
+        folders = library.folders
+        trash = library.trash
+        return true
+    }
+
+    private func flushCachedPages(_ notebookIDs: [UUID]) async -> Bool {
+        for id in notebookIDs {
+            for store in pageStores[id]?.values.map({ $0 }) ?? [] {
+                store.finishTextEditing()
+                guard await store.saveForClose() else {
+                    errorMessage = "The current content could not be saved. Delete was cancelled. Keep the notebook open."
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    private func retireNotebookCache(_ id: UUID) {
+        pageStores[id]?.values.forEach { $0.retireForTrash() }
+        pageStores.removeValue(forKey: id)
+        coverRequests[id, default: 0] += 1
+        coverPages.removeValue(forKey: id)
+    }
+
+    private func restoredNotebookTitle(_ notebook: CanvasNotebook, in existing: [CanvasNotebook]) -> String {
+        var title = notebook.title
+        var suffix = 1
+        while existing.contains(where: {
+            $0.folderID == notebook.folderID && $0.title.compare(title, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }) {
+            title = "\(notebook.title) (Restored \(suffix))"
+            suffix += 1
+        }
+        return title
+    }
+
+    private func validateRestoredFiles(_ record: CanvasTrashRecord, library: CanvasNotebookLibrary) async -> Bool {
+        guard let directoryURL else { return false }
+        let succeeded: Bool = await withCheckedContinuation { continuation in
+            storageQueue.async {
+                do {
+                    var owners = record.notebooks
+                    if case .page(let page) = record.content {
+                        guard let parent = library.notebooks.first(where: { $0.id == page.notebookID }) else {
+                            throw CanvasNotebookStorageError.invalidLibrary
+                        }
+                        var singlePage = parent
+                        singlePage.pageIDs = [page.pageID]
+                        owners.append(singlePage)
+                    }
+                    for notebook in owners {
+                        let directory = Self.notebookURL(notebook.id, in: directoryURL)
+                        for source in notebook.sources {
+                            try CanvasImportedContent.validateSource(source, notebookDirectory: directory)
+                            let metadataURL = CanvasImportedContent.sourceDirectory(notebookDirectory: directory)
+                                .appendingPathComponent("\(source.id.uuidString).json")
+                            let metadata = try JSONDecoder().decode(CanvasImportSource.self, from: Data(contentsOf: metadataURL))
+                            guard metadata.id == source.id, metadata.sha256 == source.sha256,
+                                  metadata.ownedFileNames == source.ownedFileNames else { throw CanvasImportError.ioFailure }
+                        }
+                        for pageID in notebook.pageIDs {
+                            let page = try CanvasPageStore.decodeAndValidatePage(from: Data(contentsOf:
+                                Self.pageURL(pageID, notebookID: notebook.id, in: directoryURL)))
+                            if let background = page.importedBackground {
+                                guard let source = notebook.sources.first(where: { $0.id == background.sourceID }) else {
+                                    throw CanvasImportError.ioFailure
+                                }
+                                try CanvasImportedContent.validateSource(source, notebookDirectory: directory)
+                                try CanvasImportedContent.validateBackground(background, notebookDirectory: directory)
+                            }
+                        }
+                    }
+                    continuation.resume(returning: true)
+                } catch { continuation.resume(returning: false) }
+            }
+        }
+        if !succeeded { errorMessage = "Saved content is missing or invalid. The item stays in Trash. Files are preserved." }
+        return succeeded
+    }
+
+    /// Resolve page-owned imports on the storage queue. Pending manifests survive partial cleanup.
+    private func ownedResourceReferences(_ library: CanvasNotebookLibrary) async throws -> Set<CanvasOwnedNotebookResource> {
+        guard let directoryURL else { throw CanvasNotebookStorageError.invalidLibrary }
+        return try await withCheckedThrowingContinuation { continuation in
+            storageQueue.async {
+                do {
+                    let owners = library.notebooks + library.trash.flatMap(\.notebooks)
+                    var references = Set(library.trash.flatMap { $0.pendingOwnedResources ?? [] })
+                    func addPage(_ pageID: UUID, owner: CanvasNotebook) throws {
+                        let page = try CanvasPageStore.decodeAndValidatePage(from: Data(contentsOf:
+                            Self.pageURL(pageID, notebookID: owner.id, in: directoryURL)))
+                        guard let background = page.importedBackground else { return }
+                        guard let source = owner.sources.first(where: { $0.id == background.sourceID }),
+                              background.kind != .pdf || source.displayAssetNames.contains(background.displayAssetName) else {
+                            throw CanvasNotebookStorageError.invalidLibrary
+                        }
+                        for name in source.ownedFileNames {
+                            let resource = CanvasOwnedNotebookResource(notebookID: owner.id, fileName: name)
+                            try resource.validate()
+                            references.insert(resource)
+                        }
+                    }
+                    for owner in library.notebooks { for pageID in owner.pageIDs { try addPage(pageID, owner: owner) } }
+                    for record in library.trash where !record.deletionPending {
+                        for owner in record.notebooks { for pageID in owner.pageIDs { try addPage(pageID, owner: owner) } }
+                        if case .page(let page) = record.content {
+                            guard let owner = owners.first(where: { $0.id == page.notebookID }) else {
+                                throw CanvasNotebookStorageError.invalidLibrary
+                            }
+                            try addPage(page.pageID, owner: owner)
+                        }
+                    }
+                    continuation.resume(returning: references)
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    nonisolated private static func removeUnusedSourceRecords(from library: inout CanvasNotebookLibrary,
+                                                              retained: Set<CanvasOwnedNotebookResource>) {
+        func trimmed(_ notebook: CanvasNotebook) -> CanvasNotebook {
+            var result = notebook
+            result.sources.removeAll { !retained.contains(CanvasOwnedNotebookResource(notebookID: notebook.id, fileName: $0.storedName)) }
+            return result
+        }
+        library.notebooks = library.notebooks.map(trimmed)
+        for index in library.trash.indices where !library.trash[index].deletionPending {
+            switch library.trash[index].content {
+            case .page: break
+            case .notebook(let notebook): library.trash[index].content = .notebook(trimmed(notebook))
+            case .folder(let folder, let children): library.trash[index].content = .folder(folder, children.map(trimmed))
             }
         }
     }

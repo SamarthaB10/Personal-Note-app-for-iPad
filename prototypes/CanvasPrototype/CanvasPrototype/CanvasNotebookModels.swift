@@ -76,14 +76,16 @@ struct CanvasNotebookLibrary: Codable {
     var notebooks: [CanvasNotebook] = []
     var folders: [CanvasFolder] = []
     var revision = 0
+    var trash: [CanvasTrashRecord] = []
 
-    init(notebooks: [CanvasNotebook] = [], folders: [CanvasFolder] = [], revision: Int = 0) {
+    init(notebooks: [CanvasNotebook] = [], folders: [CanvasFolder] = [], revision: Int = 0, trash: [CanvasTrashRecord] = []) {
         self.notebooks = notebooks
         self.folders = folders
         self.revision = revision
+        self.trash = trash
     }
 
-    private enum CodingKeys: String, CodingKey { case formatVersion, notebooks, folders, revision }
+    private enum CodingKeys: String, CodingKey { case formatVersion, notebooks, folders, revision, trash }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -92,6 +94,7 @@ struct CanvasNotebookLibrary: Codable {
         // The issue 3 and issue 4 indexes have no folder list or revision.
         folders = try values.decodeIfPresent([CanvasFolder].self, forKey: .folders) ?? []
         revision = try values.decodeIfPresent(Int.self, forKey: .revision) ?? 0
+        trash = try values.decodeIfPresent([CanvasTrashRecord].self, forKey: .trash) ?? []
     }
 
     func validate() throws {
@@ -100,6 +103,7 @@ struct CanvasNotebookLibrary: Codable {
               Set(notebooks.map(\.id)).count == notebooks.count else {
             throw CanvasNotebookStorageError.invalidLibrary
         }
+        try validateTrash()
         for folder in folders {
             guard !folder.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw CanvasNotebookStorageError.invalidLibrary

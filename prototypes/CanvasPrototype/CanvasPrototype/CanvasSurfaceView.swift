@@ -182,6 +182,12 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         scratchGesture.onScratchCancelled = { [weak self] in self?.cancelScratchErase() }
         pageView.addGestureRecognizer(scratchGesture)
 
+        store.onCanPrepareForDestructiveChange = { [weak self] in
+            guard let self else { return true }
+            let drawingState = self.canvasView.drawingGestureRecognizer.state
+            return !self.isInteractingWithPage && !self.scratchIsRecognized && self.selectionGesture == nil
+                && drawingState != .began && drawingState != .changed
+        }
         store.onPrepareForExport = { [weak self] in
             guard let self, !self.isPreparedForRemoval else {
                 throw CanvasExportSnapshotAdapter.SnapshotError.missingPage
@@ -232,6 +238,7 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         if ownsFlushCallback {
             store.onFlushCanvasDrawing = nil
             store.onPrepareForExport = nil
+            store.onCanPrepareForDestructiveChange = nil
         }
         backgroundTask?.cancel()
         backgroundTask = nil

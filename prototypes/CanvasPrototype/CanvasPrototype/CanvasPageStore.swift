@@ -44,10 +44,12 @@ final class CanvasPageStore: ObservableObject {
     var textBoxChoiceStartsEditing: Bool { textBoxChoiceIntent == .edit }
 
 
+    var onCanPrepareForDestructiveChange: (() -> Bool)?
     var onPrepareForExport: (() throws -> CanvasExportPageCapture)?
 
     /// A surface copies pending ink and current text without invoking the save path.
     func prepareForExport() throws -> CanvasExportPageCapture {
+        guard !isRetired else { throw CanvasExportSnapshotAdapter.SnapshotError.missingPage }
         if let onPrepareForExport { return try onPrepareForExport() }
         guard selectionTransform == nil else { throw CanvasExportSnapshotAdapter.SnapshotError.activeInput }
         return CanvasExportPageCapture(page: page, ink: .data(page.inkDrawingData))
@@ -68,6 +70,7 @@ final class CanvasPageStore: ObservableObject {
     private var scratchUndoStack: [[RemovedStroke]] = []
     private var pendingPageSave: DispatchWorkItem?
     private var canSave = true
+    private var isRetired = false
     private var textBoxChoiceIntent: TextBoxChoiceIntent?
     private var selectionTransform: SelectionTransform?
 
@@ -168,6 +171,16 @@ final class CanvasPageStore: ObservableObject {
         }
     }
 
+    /// Retire only after the content is saved and Trash membership is published.
+    func retireForTrash() {
+        isRetired = true
+        pendingPageSave?.cancel()
+        pendingPageSave = nil
+        onFlushCanvasDrawing = nil
+        onPrepareForExport = nil
+        onCanPrepareForDestructiveChange = nil
+    }
+
     var drawing: PKDrawing {
         guard !page.inkDrawingData.isEmpty else { return PKDrawing() }
         do {
@@ -180,7 +193,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     var canWrite: Bool {
-        canSave && fileURL != nil
+        canSave && !isRetired && fileURL != nil
     }
 
     var hasSaveError: Bool {
@@ -211,6 +224,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     func reloadSavedPage() {
+        guard !isRetired else { return }
         cancelTextBoxChoice()
         endSelectionTransform(cancelled: true)
         actionRevision += 1
@@ -731,7 +745,7 @@ final class CanvasPageStore: ObservableObject {
     }
 
     private func writeSnapshot(isUserAction: Bool = false, completion: ((Bool) -> Void)? = nil) {
-        guard canSave, let fileURL else {
+        guard canSave, !isRetired, let fileURL else {
             if fileURL == nil { saveStatus = "Local storage is unavailable." }
             if isUserAction { actionMessage = saveStatus }
             completion?(false)
