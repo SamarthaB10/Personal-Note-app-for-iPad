@@ -60,3 +60,31 @@ Follow-up commands and results:
 - Standards and Spec follow-up reviews: no findings. Both require a new live drag check.
 
 The updated source remains in the existing untracked toolbar file. Other pending work is preserved. No new unit or integration tests, dependencies, note-storage changes, or production deployment were added. The physical check must cover long drags, direction changes, collapse and expansion, edge release, and both finger and Pencil input. Smooth movement is not yet confirmed.
+
+## Fast lasso and zoom follow-up
+
+The user confirmed that the dock correction works. The user then reported a quick lasso circle followed by a drag that stops or flashes. The user also reported excessive zoom out, a fixed zoom percentage, displaced content, and scratch erase that fails at random during bursts of writing.
+
+A temporary app exercised the actual notebook host, surface, and page store. It closed a loop, started a drag before the queued selection display update, let that update run, and moved the ink by 40 page points. `/tmp/run-notes-zoom-scratch-repro.sh` reported `FAIL quick loop and immediate drag move the ink`. Synchronizing the selection display at the common movement entry point changed that result to `PASS`. The queued display update had canceled the drag because its selection was still empty. This correction covers both a completed loop and direct contact with ink.
+
+The notebook now stops zoom out at whole-page fit and disables zoom bounce. The initial width-fit view and maximum zoom stay the same. The minimum is updated when the viewport changes. The temporary check reported both zoom-limit checks as failures before this correction.
+
+The temporary basic scratch check passed: scratch over one known stroke removed both the stroke and scratch. The notebook zoom percentage callback also passed. These checks did not reproduce the reported random scratch fault or fixed percentage. Those reports and displaced content remain open. They must not be treated as corrected by the lasso or zoom-limit changes. An additional window-attached probe was prepared, but the simulator did not complete its boot and launch commands after restart. No physical Pencil result is claimed.
+
+Commands and results for this follow-up:
+
+- `git rev-parse --show-toplevel` and `git rev-parse --path-format=absolute --git-common-dir`: confirmed the original repository and active worktree are the same.
+- `git status --short --branch`: checked pending changes before editing; unrelated image, undo, library, and toolbar work is preserved.
+- `xcode-select -p` and `xcodebuild -version`: same Xcode path and version recorded above.
+- `xcodebuild -quiet -project /tmp/notes-tool-baseline/CanvasPrototype/CanvasPrototype.xcodeproj -scheme CanvasPrototype -destination 'platform=iOS Simulator,id=2A1BD5CC-3E79-481C-933C-B7063CDBB3B3' -derivedDataPath /tmp/NotesToolReproDerivedData ONLY_ACTIVE_ARCH=YES build`: exit 0. Temporary app code stays outside the repository. This is a diagnosis command, not a new repository test suite.
+- `/tmp/run-notes-zoom-scratch-repro.sh`: exit 1 before the lasso correction; quick movement failed. With only the selection synchronization changed, quick movement passed, and the two pre-existing zoom-limit checks still failed. A later run with all current corrections could not complete because simulator commands waited for boot or termination. It supplies no final all-green result.
+- Full-source `xcrun swiftc -typecheck` command recorded above: exit 0 with warnings treated as errors.
+- Signed physical `xcodebuild` command recorded above: exit 0. Xcode reported the existing interface-orientation warning.
+- Independent Standards review: no breaches or code smells requiring changes. Independent Spec review: no findings in the lasso and zoom-limit changes. Both leave the other reports open.
+
+No unit or integration tests, dependencies, storage-format changes, database, cloud note storage, PR, push, or production deployment were added. Apple developer documentation and local Apple signing services were used. [Apple documents the ink canvas as a scroll view](https://developer.apple.com/documentation/pencilkit/pkcanvasview); the additional diagnosis checks its input controls after window attachment.
+
+Required physical check: circle a small handwritten item and start movement at once. Repeat fast circles and direction changes with Pencil and finger input. Check that the whole stroke moves, no new ink appears, Undo restores its old position, and reopening preserves the moved position. Pinch out to whole-page fit and back in. Check the percentage and alignment of ink, typed text, and the page background. Repeat scratch-and-hold during bursts of handwriting and check one-step Undo.
+
+- `python3 /private/tmp/ipad-notes-issue4-device.py install`: exit 0 for this update. The existing app and local notes were kept.
+- `python3 /private/tmp/ipad-notes-issue4-device.py launch`: exit 0 for this update. Opened it on the connected iPad.

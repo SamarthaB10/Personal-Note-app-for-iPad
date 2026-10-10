@@ -661,8 +661,6 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
             textBoxes: store.page.textBoxes, shapes: store.page.shapes
         )
         guard !hit.strokeIndices.isEmpty, store.selectTouchedInk(at: point) else { return false }
-        // Synchronize overlay selection before the first transform update arrives.
-        apply(store.page, tool: store.tool, color: store.color, width: store.inkWidth)
         return beginSelectionGesture(at: point, touchedInk: true)
     }
 
@@ -674,6 +672,9 @@ final class CanvasSurfaceView: UIView, PKCanvasViewDelegate, UIGestureRecognizer
         // The initial ink hit already chose the top stroke, including at a crossing.
         let touchesSelectedContent = touchedInk || store.directSelectionContains(point)
         guard touchesResizeHandle || touchesSelectedContent else { return false }
+        // A new loop can be followed by a drag before the queued display update.
+        // Apply its selection now so that update cannot cancel the new drag.
+        apply(store.page, tool: store.tool, color: store.color, width: store.inkWidth)
         selectionAnchor = CGPoint(x: bounds.midX, y: bounds.midY)
         if !touchedInk && (resizeIsArmed || (touchesResizeHandle && !touchesSelectedContent)) {
             selectionGesture = .resize(startDistance: max(1, hypot(point.x - selectionAnchor.x, point.y - selectionAnchor.y)))

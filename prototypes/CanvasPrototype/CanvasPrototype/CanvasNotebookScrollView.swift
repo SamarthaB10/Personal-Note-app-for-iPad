@@ -75,9 +75,9 @@ final class CanvasNotebookScrollHost: UIScrollView, UIScrollViewDelegate {
         delegate = self
         backgroundColor = UIColor(white: 0.10, alpha: 1)
         contentInsetAdjustmentBehavior = .never
-        minimumZoomScale = 0.25
+        minimumZoomScale = 1
         maximumZoomScale = 3
-        bouncesZoom = true
+        bouncesZoom = false
         delaysContentTouches = false
         canCancelContentTouches = true
         keyboardDismissMode = .interactive
@@ -140,6 +140,10 @@ final class CanvasNotebookScrollHost: UIScrollView, UIScrollViewDelegate {
         } else {
             column.bounds.size.height = CGFloat(pages.count) * (pageHeight + pageGap)
         }
+        // Keep a whole page visible at the lowest zoom, including after rotation.
+        let minimum = min(1, bounds.height / pageHeight)
+        if minimumZoomScale != minimum { minimumZoomScale = minimum }
+        if zoomScale < minimumZoomScale { setZoomScale(minimumZoomScale, animated: false) }
         layoutColumnAndFooter()
         if let id = pendingPageID, let index = pages.firstIndex(where: { $0.id == id }) {
             pendingPageID = nil
