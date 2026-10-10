@@ -18,7 +18,7 @@ import SwiftUI
 /// Native paths from Lucide SVGs. No external renderer is needed.
 struct CanvasLucideIcon: View {
     enum Kind {
-        case pen, marker, eraser, text, rectangle, lasso, box, undo, more, settings, folder, notebook, plus, arrowLeft
+        case pen, marker, eraser, text, rectangle, lasso, box, undo, more, settings, folder, notebook, plus, arrowLeft, home
     }
 
     let kind: Kind
@@ -36,6 +36,24 @@ struct CanvasLucideIcon: View {
     private var iconPath: Path {
         var path = Path()
         switch kind {
+        case .home:
+            path.move(to: CGPoint(x: 15, y: 21))
+            path.addLine(to: CGPoint(x: 15, y: 13))
+            path.addQuadCurve(to: CGPoint(x: 14, y: 12), control: CGPoint(x: 15, y: 12))
+            path.addLine(to: CGPoint(x: 10, y: 12))
+            path.addQuadCurve(to: CGPoint(x: 9, y: 13), control: CGPoint(x: 9, y: 12))
+            path.addLine(to: CGPoint(x: 9, y: 21))
+            path.move(to: CGPoint(x: 3, y: 10))
+            path.addQuadCurve(to: CGPoint(x: 3.709, y: 8.472), control: CGPoint(x: 3, y: 9.1))
+            path.addLine(to: CGPoint(x: 10.709, y: 2.472))
+            path.addQuadCurve(to: CGPoint(x: 13.291, y: 2.472), control: CGPoint(x: 12, y: 1.366))
+            path.addLine(to: CGPoint(x: 20.291, y: 8.472))
+            path.addQuadCurve(to: CGPoint(x: 21, y: 10), control: CGPoint(x: 21, y: 9.1))
+            path.addLine(to: CGPoint(x: 21, y: 19))
+            path.addQuadCurve(to: CGPoint(x: 19, y: 21), control: CGPoint(x: 21, y: 21))
+            path.addLine(to: CGPoint(x: 5, y: 21))
+            path.addQuadCurve(to: CGPoint(x: 3, y: 19), control: CGPoint(x: 3, y: 21))
+            path.closeSubpath()
         case .folder:
             path.move(to: CGPoint(x: 20, y: 20))
             path.addQuadCurve(to: CGPoint(x: 22, y: 18), control: CGPoint(x: 22, y: 20))

@@ -33,8 +33,12 @@ The location for deleted items that can still be restored.
 _Avoid_: Permanent deletion when referring to moving an item here.
 
 **Ink**:
-Handwritten marks made with a drawing tool.
+Marks made with a drawing tool, including handwriting and precomputed shapes.
 _Avoid_: Typed text when referring to these marks.
+
+**Shape**:
+A precomputed ink drawing, such as a triangle, square, circle, or arrow. It supports the same erase and selection actions as handwriting.
+_Avoid_: Text box when referring to this drawing.
 
 **Typed text**:
 Text entered with a keyboard.
@@ -49,11 +53,11 @@ An eraser that removes only the part of ink it touches.
 _Avoid_: Object eraser when referring to this mode.
 
 **Scratch erase**:
-A scratch-and-hold writing gesture that removes handwritten ink. It does not remove text boxes, shapes, or original PDF content.
+A scratch-and-hold writing gesture that removes ink, including precomputed shapes. It does not remove text boxes or original PDF content.
 _Avoid_: Scribble when referring to this feature; Scribble also names Apple's handwriting-to-text feature.
 
 **Lasso**:
-A tool that selects complete ink strokes, text boxes, and shapes within a freehand loop or box for movement or resizing. Original PDF content is not part of this selection.
+A tool that selects complete ink strokes, including shape strokes, and text boxes for movement or resizing. Contact or a partial loop can select the touched complete ink stroke. Text boxes remain separate complete objects. Original PDF content is not part of this selection.
 _Avoid_: Eraser when referring to this tool.
 
 **Selection**:

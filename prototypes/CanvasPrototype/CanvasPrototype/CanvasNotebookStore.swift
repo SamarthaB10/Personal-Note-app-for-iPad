@@ -20,6 +20,8 @@ final class CanvasNotebookStore: ObservableObject {
     private var lifecycleSaveTask: Task<Void, Never>?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var storageIsValid = false
+    private var indexMutationIsActive = false
+    private var indexMutationWaiters: [CheckedContinuation<Void, Never>] = []
     private var pageStores: [UUID: [UUID: CanvasPageStore]] = [:]
 
     init() {
@@ -80,14 +82,22 @@ final class CanvasNotebookStore: ObservableObject {
             return nil
         }
         isCreating = true
-        defer { isCreating = false }
+        await acquireIndexMutation()
+        defer {
+            releaseIndexMutation()
+            isCreating = false
+        }
         let notebook = CanvasNotebook(id: UUID(), title: title, folderID: .unfiled,
                                       pageIDs: (0..<7).map { _ in UUID() }, createdAt: Date(), coverRevision: 0)
         let library = CanvasNotebookLibrary(notebooks: notebooks + [notebook])
+        let canCreateIndex = notebooks.isEmpty
         let result: Result<Void, Error> = await withCheckedContinuation { continuation in
             storageQueue.async {
                 do {
                     let notebookURL = Self.notebookURL(notebook.id, in: directoryURL)
+                    guard !FileManager.default.fileExists(atPath: notebookURL.path) else {
+                        throw CanvasNotebookStorageError.invalidLibrary
+                    }
                     try FileManager.default.createDirectory(at: notebookURL, withIntermediateDirectories: true)
                     let blankPage = CanvasPageData(inkDrawingData: PKDrawing().dataRepresentation(),
                                                    textBoxes: [], shapes: [], scratchEraseEnabled: true)
@@ -96,7 +106,7 @@ final class CanvasNotebookStore: ObservableObject {
                         try encodedPage.write(to: Self.pageURL(pageID, notebookID: notebook.id, in: directoryURL), options: .atomic)
                     }
                     // Publish membership only after all seven editable pages exist.
-                    try JSONEncoder().encode(library).write(to: Self.indexURL(in: directoryURL), options: .atomic)
+                    try Self.writeLibrary(library, in: directoryURL, allowMissingIndex: canCreateIndex)
                     continuation.resume(returning: .success(()))
                 } catch {
                     // Partial creation files remain available for later recovery.
@@ -113,6 +123,131 @@ final class CanvasNotebookStore: ObservableObject {
             errorMessage = "The notebook could not be created. Saved files are preserved."
             return nil
         }
+    }
+
+    /// Hold the mutation permit across each await, before taking an index snapshot.
+    private func acquireIndexMutation() async {
+        if !indexMutationIsActive {
+            indexMutationIsActive = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            indexMutationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseIndexMutation() {
+        if indexMutationWaiters.isEmpty {
+            indexMutationIsActive = false
+        } else {
+            indexMutationWaiters.removeFirst().resume()
+        }
+    }
+
+    /// The bottom Add Page control adds a page after the last page.
+    func appendPage(to notebookID: UUID) async -> CanvasPageStore? {
+        await publishPage(after: nil, in: notebookID)
+    }
+
+    /// The header Add Page control adds a page immediately after the current page.
+    func insertPage(after pageID: UUID, in notebookID: UUID) async -> CanvasPageStore? {
+        await publishPage(after: pageID, in: notebookID)
+    }
+
+    /// Hold the permit until the new page and its ordered index entry are saved.
+    private func publishPage(after anchorPageID: UUID?, in notebookID: UUID) async -> CanvasPageStore? {
+        guard storageIsValid, !isLoading, let directoryURL else { return nil }
+        await acquireIndexMutation()
+        defer { releaseIndexMutation() }
+        guard let index = notebooks.firstIndex(where: { $0.id == notebookID }) else {
+            errorMessage = "The notebook could not be found."
+            return nil
+        }
+        if let anchorPageID, !notebooks[index].pageIDs.contains(anchorPageID) {
+            errorMessage = "The current page could not be found. Saved files are preserved."
+            return nil
+        }
+        guard notebooks[index].pageIDs.count < CanvasNotebook.maximumPageCount else {
+            errorMessage = "This notebook has reached the 300-page limit."
+            return nil
+        }
+        guard await openNotebook(notebookID) != nil else { return nil }
+        // Read the current state after opening; cover updates can finish during the await.
+        var updatedNotebooks = notebooks
+        let insertionIndex: Int
+        if let anchorPageID {
+            guard let anchorIndex = updatedNotebooks[index].pageIDs.firstIndex(of: anchorPageID) else {
+                errorMessage = "The current page could not be found. Saved files are preserved."
+                return nil
+            }
+            insertionIndex = anchorIndex + 1
+        } else {
+            insertionIndex = updatedNotebooks[index].pageIDs.count
+        }
+        let pageID = UUID()
+        let page = CanvasPageData(inkDrawingData: PKDrawing().dataRepresentation(),
+                                  textBoxes: [], shapes: [], scratchEraseEnabled: true,
+                                  paper: updatedNotebooks[index].defaultPaper)
+        updatedNotebooks[index].pageIDs.insert(pageID, at: insertionIndex)
+        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks)
+        let fileURL = Self.pageURL(pageID, notebookID: notebookID, in: directoryURL)
+        let result: Result<Void, Error> = await withCheckedContinuation { continuation in
+            storageQueue.async {
+                do {
+                    guard !FileManager.default.fileExists(atPath: fileURL.path) else {
+                        throw CanvasNotebookStorageError.invalidLibrary
+                    }
+                    try JSONEncoder().encode(page).write(to: fileURL, options: .atomic)
+                    try Self.writeLibrary(library, in: directoryURL)
+                    continuation.resume(returning: .success(()))
+                } catch {
+                    // An unpublished page is kept for recovery if the index write fails.
+                    continuation.resume(returning: .failure(error))
+                }
+            }
+        }
+        switch result {
+        case .success:
+            let store = CanvasPageStore(page: page, fileURL: fileURL, saveQueue: storageQueue)
+            pageStores[notebookID]?[pageID] = store
+            notebooks[index].pageIDs.insert(pageID, at: insertionIndex)
+            errorMessage = nil
+            return store
+        case .failure:
+            errorMessage = "The page could not be added. Saved files are preserved."
+            return nil
+        }
+    }
+
+    func setDefaultPaper(_ paper: CanvasPaper, for notebookID: UUID) async -> Bool {
+        guard storageIsValid, !isLoading, let directoryURL else { return false }
+        await acquireIndexMutation()
+        defer { releaseIndexMutation() }
+        guard let index = notebooks.firstIndex(where: { $0.id == notebookID }) else {
+            errorMessage = "The notebook could not be found."
+            return false
+        }
+        guard notebooks[index].defaultPaper != paper else { return true }
+        var updatedNotebooks = notebooks
+        updatedNotebooks[index].defaultPaper = paper
+        let library = CanvasNotebookLibrary(notebooks: updatedNotebooks)
+        let succeeded: Bool = await withCheckedContinuation { continuation in
+            storageQueue.async {
+                do {
+                    try Self.writeLibrary(library, in: directoryURL)
+                    continuation.resume(returning: true)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+        if succeeded {
+            notebooks[index].defaultPaper = paper
+            errorMessage = nil
+        } else {
+            errorMessage = "The default paper could not be saved. Saved files are preserved."
+        }
+        return succeeded
     }
 
     /// Reads and validates every page before exposing editable stores.
@@ -207,7 +342,8 @@ final class CanvasNotebookStore: ObservableObject {
         guard let directoryURL else { return }
         if let previous = coverPages[notebookID],
            previous.inkDrawingData == page.inkDrawingData,
-           previous.textBoxes == page.textBoxes, previous.shapes == page.shapes { return }
+           previous.textBoxes == page.textBoxes, previous.shapes == page.shapes,
+           previous.paper == page.paper { return }
         coverPages[notebookID] = page
         let request = (coverRequests[notebookID] ?? 0) + 1
         coverRequests[notebookID] = request
@@ -231,6 +367,20 @@ final class CanvasNotebookStore: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Validate existing data before replacing an index; never replace an invalid file.
+    nonisolated private static func writeLibrary(_ library: CanvasNotebookLibrary, in directory: URL,
+                                                  allowMissingIndex: Bool = false) throws {
+        let url = indexURL(in: directory)
+        if FileManager.default.fileExists(atPath: url.path) {
+            let existing = try JSONDecoder().decode(CanvasNotebookLibrary.self, from: Data(contentsOf: url))
+            try existing.validate()
+        } else if !allowMissingIndex {
+            throw CanvasNotebookStorageError.invalidLibrary
+        }
+        try library.validate()
+        try JSONEncoder().encode(library).write(to: url, options: .atomic)
     }
 
     nonisolated private static func indexURL(in directory: URL) -> URL {
@@ -257,17 +407,33 @@ final class CanvasNotebookStore: ObservableObject {
             context.setFillColor(UIColor.white.cgColor)
             context.fill(CGRect(origin: .zero, size: CGSize(width: 180, height: pageSize.height * scale)))
             context.scaleBy(x: scale, y: scale)
+            if page.paper != .blank {
+                context.setStrokeColor(UIColor(white: 0.84, alpha: 1).cgColor)
+                context.setLineWidth(0.5)
+                let spacing: CGFloat = page.paper == .lined ? 28 : 24
+                for y in stride(from: spacing, through: pageSize.height, by: spacing) {
+                    context.move(to: CGPoint(x: 0, y: y))
+                    context.addLine(to: CGPoint(x: pageSize.width, y: y))
+                }
+                if page.paper == .grid {
+                    for x in stride(from: spacing, through: pageSize.width, by: spacing) {
+                        context.move(to: CGPoint(x: x, y: 0))
+                        context.addLine(to: CGPoint(x: x, y: pageSize.height))
+                    }
+                }
+                context.strokePath()
+            }
             let drawing = (try? PKDrawing(data: page.inkDrawingData)) ?? PKDrawing()
             drawing.image(from: CGRect(origin: .zero, size: pageSize), scale: scale)
                 .draw(in: CGRect(origin: .zero, size: pageSize))
             for shape in page.shapes {
-                context.setStrokeColor(coverColor(shape.color).cgColor)
+                context.setStrokeColor(shape.color.uiColor.cgColor)
                 context.setLineWidth(shape.lineWidth)
                 context.stroke(shape.frame)
             }
             for box in page.textBoxes {
                 (box.text as NSString).draw(in: box.frame.insetBy(dx: 5, dy: 5), withAttributes: [
-                    .font: UIFont.systemFont(ofSize: box.fontSize), .foregroundColor: coverColor(box.color)
+                    .font: UIFont.systemFont(ofSize: box.fontSize), .foregroundColor: box.color.uiColor
                 ])
             }
         }
@@ -275,12 +441,4 @@ final class CanvasNotebookStore: ObservableObject {
         return data
     }
 
-    nonisolated private static func coverColor(_ color: CanvasColor) -> UIColor {
-        switch color {
-        case .black: .black
-        case .blue: .systemBlue
-        case .red: .systemRed
-        case .green: .systemGreen
-        }
-    }
 }

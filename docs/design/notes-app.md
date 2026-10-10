@@ -1,6 +1,6 @@
 # Personal iPad notes: first-version design
 
-Status: Confirmed by Samartha on 9 October 2026. The design interview is complete. No app implementation has started.
+Status: Confirmed by Samartha on 9 October 2026, with the issue 4 changes recorded below. The design interview is complete. The canvas and local notebook implementation passed the recorded physical checks in [the canvas record](../implementation/canvas-prototype.md) and [the notebook record](../implementation/local-notebooks.md).
 
 Repository: https://github.com/SamarthaB10/Personal-Note-app-for-iPad
 
@@ -8,12 +8,12 @@ Repository: https://github.com/SamarthaB10/Personal-Note-app-for-iPad
 
 - Native app for one iPad, with no fees or paid services. All notes stay local. The user accepts the weekly free build and installation task.
 - Custom folders plus built-in Unfiled. Each contains notebooks; each notebook contains pages. Show notebooks in a cover grid.
-- New blank notebooks open with seven pages. Scroll vertically and add pages at the end, with no fixed app page limit.
+- New blank notebooks open with seven pages. Scroll vertically and add pages at the end, up to 300 pages per notebook.
 - Smooth Pencil writing with Apple-style ink tools, manual widths, colors, partial erase, and object erase.
 - Scratch-and-hold erase for handwritten ink, enabled by default with an on/off option and one-step Undo.
 - Text Box option with movable and resizable boxes. Open the keyboard only after the user explicitly taps a box. Never convert Pencil writing to text.
 - Basic line, arrow, rectangle, and ellipse tools.
-- Freehand and boxed lasso for complete enclosed strokes, text boxes, and shapes. Mixed selections move and resize together proportionally. Original PDF content stays fixed.
+- Freehand and boxed lasso for complete ink strokes, text boxes, and shapes. Touching ink or drawing a partial loop selects the touched complete stroke. Mixed selections move and resize together proportionally. Original PDF content stays fixed.
 - Import each PDF as a separate notebook, with its actual page count. Write, type, and add shapes over its pages without changing the source file.
 - Export the current page or an entire notebook as PDF, with visible ink, text, and shapes in page order. Preserve the displayed paper appearance and the source PDF's colors.
 - Blank, lined, and grid paper. Light and dark modes.
@@ -31,7 +31,7 @@ The detailed accepted decisions and source findings follow. The canvas technolog
 - Support smooth Apple Pencil handwriting and keyboard text entry.
 - Create a notebook and open it.
 - Start each new blank notebook with seven pages.
-- Permit more pages to be added to each notebook. There is no fixed app page limit; device storage remains a real limit.
+- Permit more pages to be added to each notebook, up to 300 pages. Device storage remains a real limit.
 - Create folders to organize notebooks.
 - Provide drawing tools similar to those in Apple Notes, including an eraser.
 - Provide object erasing and partial erasing.
@@ -110,6 +110,25 @@ The user accepted Q23 through Q27.
 ## Final review
 
 Samartha confirmed that the complete first-version scope above matches the intended app on 9 October 2026. No interview choices remain open. The design interview is complete. This confirmation does not authorize deployment or changes to device settings.
+
+## Accepted changes during issue 4
+
+These explicit user changes replace the earlier page-limit and ink-enclosure rules. Other accepted content boundaries remain in effect.
+
+- Put Add Page after the last page, including the initial seventh page. Append pages in order, up to 300 pages per notebook. Show the limit when the notebook reaches 300 pages.
+- Also put Add Page in the top bar. This control inserts a new page immediately after the current page, so writing can be added between existing pages. Keep the bottom control for appending. Both use the notebook default paper and the 300-page maximum.
+- Use finger pinch to zoom. The default view fills the available width. Zoom out to show a centered whole page with dark space outside it. Zoom in to enlarge writing. Keep controls the same size and show the zoom percentage.
+- Lasso contact or a quick partial loop selects the touched complete ink stroke. Do not select a whole word through recognition or stroke grouping. Do not cut a stroke. Attach direct movement immediately, without a Move action or menu wait. Text boxes remain separate complete objects.
+- A short tool tap activates its remembered settings. Press and hold opens settings for that tool. The eraser remembers Object or Partial mode. Each ink tool remembers its own width and color. Provide more color choices.
+- Save page changes automatically. Do not show Save or Reopen controls in the notebook editor. Show a save error when a write fails. In the user's physical feedback, "hard-click" on a tool means press and hold to open its settings.
+- Provide a broad color palette. Default to black for new writing in light mode and white in dark mode. When the writing color is black in light mode, switch it to white on entering dark mode. Use the reverse change on returning to light mode. Keep other selected colors and all saved marks unchanged.
+- Offer triangle, square, circle, and arrow shapes. Shapes are precomputed ink strokes, with the chosen width and color. Partial erase, object erase, scratch-and-hold, and lasso Delete act on these strokes like handwriting. Preserve existing added shapes when converting them to ink. This replaces the earlier rule that kept added shapes separate from scratch erase. Text boxes and original PDF content stay protected from scratch erase.
+- For the later import work, show Create or Import File in the library. Permit PDF and image backgrounds with editable annotations. The notebook's plus control also offers Import PDF into the existing notebook. Import only the pages that fit within its remaining 300-page capacity, in source order. Keep the original file unchanged and report the imported count when pages are omitted. Parallel preparation does not change numeric issue order.
+- Show explicit Import from Files and Export to Files controls. Import uses the native Files picker. Export saves the current page or complete notebook as a PDF with visible content and appearance. The native Files destination choice lets the user save the exported copy.
+- Show a small Home button at the top of each notebook. It returns to that notebook's containing folder after saving. For an Unfiled notebook, return to Unfiled. From a custom folder, the user can then return to the folder list.
+- Keep multiple custom folders in issue 5, after issue 4. Each folder shows its own notebook grid.
+
+The issue 4 ticket still states no fixed page limit. The later explicit instruction sets a maximum of 300 pages for each notebook. This document records the current requirement without changing the ticket.
 
 ## Required behavior checks for a future build
 

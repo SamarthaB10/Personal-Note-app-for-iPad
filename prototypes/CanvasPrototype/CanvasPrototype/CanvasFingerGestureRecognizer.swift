@@ -26,7 +26,17 @@ final class CanvasFingerGestureRecognizer: UIGestureRecognizer {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        guard activeTouch == nil, touches.count == 1, let touch = touches.first, let view else {
+        if let activeTouch {
+            // A second finger belongs to notebook pinch or pan, never to a page path.
+            if activeTouch.type == .direct { cancelPath() }
+            return
+        }
+        guard touches.count == 1, let touch = touches.first, let view else {
+            state = .failed
+            return
+        }
+        if touch.type == .direct,
+           (event.allTouches?.filter { $0.type == .direct && $0.phase != .ended && $0.phase != .cancelled }.count ?? 0) > 1 {
             state = .failed
             return
         }
@@ -39,6 +49,10 @@ final class CanvasFingerGestureRecognizer: UIGestureRecognizer {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let activeTouch, touches.contains(activeTouch), let view else { return }
+        if activeTouch.type == .direct, notebookGestureIsActive(from: view) {
+            cancelPath()
+            return
+        }
         append(activeTouch.location(in: view))
         guard state == .began || state == .changed else { return }
         state = .changed
@@ -76,6 +90,26 @@ final class CanvasFingerGestureRecognizer: UIGestureRecognizer {
 
     override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool {
         false
+    }
+
+    private func cancelPath() {
+        activeTouch = nil
+        onEvent?(.cancelled)
+        state = .cancelled
+    }
+
+    /// An ancestor scroll view owns navigation. Cancel its page preview before it can commit.
+    private func notebookGestureIsActive(from view: UIView) -> Bool {
+        var ancestor = view.superview
+        while let current = ancestor {
+            if let scrollView = current as? UIScrollView {
+                let pan = scrollView.panGestureRecognizer.state
+                let pinch = scrollView.pinchGestureRecognizer?.state
+                if pan == .began || pan == .changed || pinch == .began || pinch == .changed { return true }
+            }
+            ancestor = current.superview
+        }
+        return false
     }
 
     private func append(_ point: CGPoint) {
